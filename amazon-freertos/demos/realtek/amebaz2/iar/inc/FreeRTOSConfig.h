@@ -253,4 +253,7 @@ extern int  freertos_ready_to_sleep(void);
 /* Add by Realtek to re-arrange the FreeRTOS priority*/
 #define PRIORITIE_OFFSET				( 4 )
 
+/* Enable  Cert provision mechanism */
+#define CONFIG_USER_PROVISION_DEMO_ENABLED
+
 #endif /* FREERTOS_CONFIG_H */

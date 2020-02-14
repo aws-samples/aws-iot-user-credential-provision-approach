@@ -1402,7 +1402,6 @@ static void prvInitiateMQTTConnect( MQTTEventData_t * const pxEventData )
             xConnectParams.ulPingRequestTimeoutTicks = mqttconfigKEEP_ALIVE_TIMEOUT_TICKS;
             xConnectParams.usPacketIdentifier = ( uint16_t ) ( mqttMESSAGE_IDENTIFIER_EXTRACT( pxEventData->xNotificationData.ulMessageIdentifier ) );
             xConnectParams.ulTimeoutTicks = pxEventData->xTicksToWait;
-            xConnectParams.pWillInfo = pxEventData->u.pxConnectParams->pWillInfo;
 
             if( MQTT_Connect( &( pxConnection->xMQTTContext ), &( xConnectParams ) ) != eMQTTSuccess )
             {
@@ -2066,20 +2065,5 @@ MQTTAgentReturnCode_t MQTT_AGENT_ReturnBuffer( MQTTAgentHandle_t xMQTTHandle,
 
     /* Return success. */
     return eMQTTAgentSuccess;
-}
-/*-----------------------------------------------------------*/
-
-void prvShutdownConnection( MQTTAgentHandle_t xMQTTHandle )
-{
-    UBaseType_t uxBrokerNumber = ( UBaseType_t ) mqttDECODE_BROKER_NUMBER( xMQTTHandle ); /*lint !e923 Opaque pointer. */
-
-    MQTTBrokerConnection_t * pxConnection = &( xMQTTConnections[ uxBrokerNumber ] );
-
-    mqttconfigDEBUG_LOG( ( "start to shutdown socket.\r\n" ) );
-
-    /* Shutdown the connection. */
-    ( void ) SOCKETS_Shutdown( pxConnection->xSocket, SOCKETS_SHUT_RDWR );
-
-    pxConnection->xSocket = SOCKETS_INVALID_SOCKET;
 }
 /*-----------------------------------------------------------*/

@@ -38,6 +38,8 @@
 #include "aws_wifi.h"
 #include "aws_clientcredential.h"
 #include "aws_application_version.h"
+/* cert provision initialization */
+#include "cert_provision.h"
 
 int errno = 0;
 
@@ -241,7 +243,6 @@ static void prvDaemonTask( void * pvParameters )
         /* Connect to the Wi-Fi before running the tests. */
         prvWifiConnect();
         
-        vDevModeKeyProvisioning();
         /* Start the demo tasks. */
         DEMO_RUNNER_RunDemos();
     }
@@ -251,13 +252,46 @@ static void prvDaemonTask( void * pvParameters )
 void vApplicationDaemonTaskStartupHook( void )
 {
     BaseType_t xReturned;
-    xReturned = xTaskCreate( prvDaemonTask,               /* The function that implements the task. */
-                             "DemoTask",                           /* Human readable name for the task. */
-                             configMINIMAL_STACK_SIZE * 4, /* Size of the stack to allocate for the task, in words not bytes! */
-                             NULL,                                /* The task parameter is not used. */
-                             tskIDLE_PRIORITY+5,                    /* Runs at the lowest priority. */
-                             NULL );                 /* The handle is stored so the created task can be deleted again at the end of the demo. */
-    configASSERT(xReturned == pdPASS);
+
+#ifdef CONFIG_USER_PROVISION_DEMO_ENABLED
+    if( SYSTEM_Init() == pdPASS )
+    {
+        int xCredResult = xCheckCredInFlash();
+
+        if ( xCredResult == 0 ) {
+            configPRINTF(("%s():credential exist\r\n", __func__));
+            xReturned = xTaskCreate( prvDaemonTask,               /* The function that implements the task. */
+                                 "DemoTask",                           /* Human readable name for the task. */
+                                 configMINIMAL_STACK_SIZE * 4, /* Size of the stack to allocate for the task, in words not bytes! */
+                                 NULL,                                /* The task parameter is not used. */
+                                 tskIDLE_PRIORITY+5,                    /* Runs at the lowest priority. */
+                                 NULL );                 /* The handle is stored so the created task can be deleted again at the end of the demo. */
+        } else {
+            configPRINTF(("%s():credential not exist\r\n", __func__));
+            /* provision fake client credential for TLS operation because of AFR design. */
+            vDevModeKeyProvisioning();
+            
+            /* Create the task to start AP mode. */
+            xReturned = xTaskCreate( vConfigureAgentTask,
+                     "CertProvision_task",
+                     configMINIMAL_STACK_SIZE * 10,
+                     NULL,
+                     tskIDLE_PRIORITY+5,
+                     NULL );
+        }
+        configASSERT(xReturned == pdPASS);
+    }
+#else
+        vDevModeKeyProvisioning();
+        xReturned = xTaskCreate( prvDaemonTask,               /* The function that implements the task. */
+                                 "DemoTask",                           /* Human readable name for the task. */
+                                 configMINIMAL_STACK_SIZE * 4, /* Size of the stack to allocate for the task, in words not bytes! */
+                                 NULL,                                /* The task parameter is not used. */
+                                 tskIDLE_PRIORITY+5,                    /* Runs at the lowest priority. */
+                                 NULL );                 /* The handle is stored so the created task can be deleted again at the end of the demo. */
+        configASSERT(xReturned == pdPASS);
+
+#endif
 }
 /*-----------------------------------------------------------*/
 
@@ -286,7 +320,22 @@ void prvWifiConnect( void )
         {
         }
     }
-
+#ifdef CONFIG_USER_PROVISION_DEMO_ENABLED
+    WiFiInfo_t wifiInfo;
+    memset(&wifiInfo, 0, sizeof(WiFiInfo_t));
+    vReadWifiInFo(&wifiInfo);
+    configPRINTF( ( "wifiInfo.wifi_ssid: %s\r\n",wifiInfo.wifi_ssid ) );
+    configPRINTF( ( "wifiInfo.wifi_password: %s\r\n",wifiInfo.wifi_password ) );
+    configPRINTF( ( "wifiInfo.wifi_ssid len: %d\r\n", strlen(wifiInfo.wifi_ssid ) ));
+    configPRINTF( ( "wifiInfo.wifi_password len : %d\r\n", strlen(wifiInfo.wifi_password ) ));
+    /* Setup parameters. */
+    xNetworkParams.pcSSID = wifiInfo.wifi_ssid;
+    xNetworkParams.ucSSIDLength = strlen( wifiInfo.wifi_ssid );
+    xNetworkParams.pcPassword = wifiInfo.wifi_password;
+    xNetworkParams.ucPasswordLength = strlen( wifiInfo.wifi_password );
+    xNetworkParams.xSecurity = clientcredentialWIFI_SECURITY;
+    xNetworkParams.cChannel = 0;
+#else
     /* Setup parameters. */
     xNetworkParams.pcSSID = clientcredentialWIFI_SSID;
     xNetworkParams.ucSSIDLength = strlen( clientcredentialWIFI_SSID );
@@ -294,6 +343,7 @@ void prvWifiConnect( void )
     xNetworkParams.ucPasswordLength = strlen( clientcredentialWIFI_PASSWORD );
     xNetworkParams.xSecurity = clientcredentialWIFI_SECURITY;
     xNetworkParams.cChannel = 0;
+#endif
 
     xWifiStatus = WIFI_ConnectAP( &( xNetworkParams ) );
 

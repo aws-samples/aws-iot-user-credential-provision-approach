@@ -42,6 +42,7 @@ static uint8_t client_addr[6];
 static xSemaphoreHandle dhcps_ip_table_semaphore;
 
 static struct netif * dhcps_netif = NULL;
+static struct ip_addr tmp_dhcps_allocated_client_address;
 /**
   * @brief  latch the specific ip in the ip table. 
   * @param  d the specific index
@@ -531,6 +532,8 @@ static void dhcps_send_offer(struct pbuf *packet_buffer)
 	IP4_ADDR(&dhcps_allocated_client_address, (ip4_addr1(&dhcps_network_id)),
 			ip4_addr2(&dhcps_network_id), ip4_addr3(&dhcps_network_id), temp_ip);
 #endif
+    tmp_dhcps_allocated_client_address = dhcps_allocated_client_address;
+
 #endif   
 	dhcps_initialize_message(dhcp_message_repository);
 	if(add_offer_options(add_msg_type(&dhcp_message_repository->options[4], DHCP_MESSAGE_TYPE_OFFER)) == 0){
@@ -743,6 +746,7 @@ uint8_t dhcps_handle_state_machine_change(uint8_t option_message_type)
 				IP4_ADDR(&dhcps_allocated_client_address, (ip4_addr1(&dhcps_network_id)),
 						ip4_addr2(&dhcps_network_id), ip4_addr3(&dhcps_network_id), ip_addr4);
 #endif
+                                tmp_dhcps_allocated_client_address = dhcps_allocated_client_address;
 				dhcp_server_state_machine = DHCP_SERVER_STATE_ACK;
 			}else{
 				dhcp_server_state_machine = DHCP_SERVER_STATE_NAK;
@@ -766,6 +770,12 @@ uint8_t dhcps_handle_state_machine_change(uint8_t option_message_type)
 
 	return dhcp_server_state_machine;
 }
+
+int32_t dhcp_get_latest_client_ip()
+{
+    return tmp_dhcps_allocated_client_address.addr;
+}
+
 /**
   * @brief  parse the dhcp message option part.
   * @param  optptr: the addr of the first option field. 
