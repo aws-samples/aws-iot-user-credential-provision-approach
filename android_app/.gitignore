@@ -6,3 +6,6 @@
 /gradlew
 /gradlew.bat
 /wrapper/
+app/build/
+local.properties
+app/app.iml

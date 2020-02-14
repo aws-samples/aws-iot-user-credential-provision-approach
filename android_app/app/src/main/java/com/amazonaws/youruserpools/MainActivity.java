@@ -21,6 +21,8 @@ import android.app.ProgressDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.os.AsyncTask;
+import android.os.Handler;
 import android.support.v4.widget.DrawerLayout;
 import android.support.v7.app.ActionBarDrawerToggle;
 import android.support.v7.app.AlertDialog;
@@ -35,10 +37,13 @@ import android.view.MenuItem;
 import android.view.View;
 import android.widget.EditText;
 import android.widget.TextView;
+import android.widget.Toast;
+
 
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoDevice;
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUser;
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserSession;
+import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserPool;
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.continuations.AuthenticationContinuation;
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.continuations.AuthenticationDetails;
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.continuations.ChallengeContinuation;
@@ -49,10 +54,15 @@ import com.amazonaws.mobileconnectors.cognitoidentityprovider.continuations.Choo
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.handlers.AuthenticationHandler;
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.handlers.ForgotPasswordHandler;
 import com.amazonaws.youruserpools.CognitoYourUserPoolsDemo.R;
+import com.amazonaws.mobileconnectors.apigateway.ApiClientFactory;
+import com.amazonaws.ClientConfiguration;
 
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+
+import cert_reply_1.IoTProvisionAPIClient;
+import cert_reply_1.model.CertReply;
 
 public class MainActivity extends AppCompatActivity {
     private final String TAG="MainActivity";
@@ -530,6 +540,21 @@ public class MainActivity extends AppCompatActivity {
         public void onSuccess(CognitoUserSession cognitoUserSession, CognitoDevice device) {
             Log.d(TAG, " -- Auth Success");
             AppHelper.setCurrSession(cognitoUserSession);
+
+            // Get id token from CognitoUserSession.
+            AppHelper.setIdToken(cognitoUserSession.getIdToken().getJWTToken());
+            Log.d(TAG, "========================idToken:"+AppHelper.getIdToken());
+
+            try {
+                AppHelper.setKeyStream(getApplicationContext().getAssets().open("store.bks"));
+            } catch (Exception e) {
+                Log.d(TAG, e.toString());
+                AppHelper.setKeyStream(null);
+                Toast toast = (Toast) Toast.makeText( getApplicationContext(),
+                        "there's no server ceritificate in this device for provisioning cert/key", Toast.LENGTH_LONG);
+                toast.show();
+            }
+
             AppHelper.newDevice(device);
             closeWaitDialog();
             launchUser();

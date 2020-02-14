@@ -212,6 +212,11 @@ public class UserActivity extends AppCompatActivity {
                 Intent aboutAppActivity = new Intent(this, AboutApp.class);
                 startActivity(aboutAppActivity);
                 break;
+            case R.id.nav_userend:
+                //cert_provision();
+                Intent CertProvisionActivity = new Intent(this, CertProvisionActivity.class);
+                startActivity(CertProvisionActivity);
+                break;
         }
     }
 

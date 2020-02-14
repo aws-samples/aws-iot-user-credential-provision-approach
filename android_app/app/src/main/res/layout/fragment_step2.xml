@@ -1,0 +1,65 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/frameLayout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    tools:context="com.amazonaws.youruserpools.step2">
+
+    <!-- TODO: Update blank fragment layout -->
+
+
+    <TextView
+        android:id="@+id/textView9"
+        android:layout_width="394dp"
+        android:layout_height="48dp"
+        android:text="Please Input Your WiFi Info"
+        android:textSize="30sp" />
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal">
+
+    <TextView
+        android:id="@+id/textView10"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="SSID:"
+        android:textSize="30sp" />
+
+    <EditText
+        android:id="@+id/ssid_input"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Mobile"
+        android:textSize="30sp" />
+</LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+    <TextView
+        android:id="@+id/textView11"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Password:"
+        android:textSize="30sp" />
+
+        <EditText
+            android:id="@+id/wifi_pwd_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Crimping@@2020"
+            android:textSize="30sp" />
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/btn_write_wifi"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Setup WiFi Config" />
+
+
+</LinearLayout>

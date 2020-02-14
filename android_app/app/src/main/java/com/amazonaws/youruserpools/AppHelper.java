@@ -21,14 +21,19 @@ import android.content.Context;
 import android.graphics.Color;
 import android.util.Log;
 
+import com.amazonaws.ClientConfiguration;
+import com.amazonaws.auth.AnonymousAWSCredentials;
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoDevice;
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserAttributes;
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserDetails;
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserPool;
 import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserSession;
 import com.amazonaws.regions.Regions;
+import com.amazonaws.services.cognitoidentityprovider.AmazonCognitoIdentityProvider;
+import com.amazonaws.services.cognitoidentityprovider.AmazonCognitoIdentityProviderClient;
 import com.amazonaws.services.cognitoidentityprovider.model.AttributeType;
 
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -99,6 +104,13 @@ public class AppHelper {
      * e.g. if your user pools are in US East (N Virginia) then set cognitoRegion = Regions.US_EAST_1.
      */
     private static final Regions cognitoRegion = Regions.DEFAULT_REGION;
+
+    private static String cert = "NONE";
+    private static String privateKey = "NONE";
+    private static String idtoken = "";
+    private static String wifiSSID = "";
+    private static String wifiPassword = "";
+    private static InputStream keyStream;
 
     // User details from the service
     private static CognitoUserSession currSession;
@@ -551,6 +563,54 @@ public class AppHelper {
 
     private static void deleteAttribute(String attributeName) {
 
+    }
+
+    public static String getPrivateKey() {
+        return privateKey;
+    }
+
+    public static void setPrivateKey(String key) {
+        privateKey = key;
+    }
+
+    public static String getIdToken() {
+        return idtoken;
+    }
+
+    public static void setIdToken(String token) {
+        idtoken = token;
+    }
+
+    public static String getWifiSSID() {
+        return wifiSSID;
+    }
+
+    public static void setWifiSSID(String ssid) {
+        wifiSSID = ssid;
+    }
+
+    public static String getWifiPassword() {
+        return wifiPassword;
+    }
+
+    public static void setWifiPassword(String password) {
+        wifiPassword = password;
+    }
+
+    public static InputStream getKeyStream() {
+        return keyStream;
+    }
+
+    public static void setKeyStream(InputStream keyInput) {
+        keyStream = keyInput;
+    }
+
+    public static String getCert() {
+        return cert;
+    }
+
+    public static void setCert(String certInput) {
+        cert = certInput;
     }
 }
 
