@@ -50,6 +50,8 @@
 #define RX_CREDENTIAL_TPYE_WIFI_SSID    ( 3 )
 #define RX_CREDENTIAL_TPYE_PASSWORD     ( 4 ) 
 #define WIFI_INFO_FLASH_OFFSET (0x1D6000) 
+#define PRIV_KEY_FLASH_OFFSET   (0x1D3000) //Flash location for Priv Key
+#define PUB_KEY_FLASH_OFFSET    (0x1D4000) //Flash location for Pub Key
 
 
 #define echoBUFFER_SIZES                ( 2000 ) /*_RB_ Want to be a multiple of the MSS but there is no MSS constant in the bastraction. */
@@ -119,6 +121,16 @@ void vWirteWifiInFo(WiFiInfo_t wifi_info)
     device_mutex_lock(RT_DEV_LOCK_FLASH);
     flash_erase_sector(&flash, WIFI_INFO_FLASH_OFFSET);
     flash_stream_write(&flash, WIFI_INFO_FLASH_OFFSET, sizeof(WiFiInfo_t), (uint8_t *) &wifi_info);
+    device_mutex_unlock(RT_DEV_LOCK_FLASH);
+}
+
+void vClearTLSTempInfo(void)
+{
+    flash_t flash;
+    
+    device_mutex_lock(RT_DEV_LOCK_FLASH);
+    flash_erase_sector(&flash, PRIV_KEY_FLASH_OFFSET);
+    flash_erase_sector(&flash, PUB_KEY_FLASH_OFFSET);
     device_mutex_unlock(RT_DEV_LOCK_FLASH);
 }
 
@@ -527,6 +539,8 @@ static void prvConfigureAgentTask( void * pvParameters )
                         (client_ip >> 16) & 0xff,
                         (client_ip >> 24) & 0xff,
                         echoECHO_PORT ) );
+        /* clear temp certificate for TLS connection. */
+        vClearTLSTempInfo();
     }
     configPRINTF(("closing sockets \n"));
     /* Close this socket before looping back to create another. */
