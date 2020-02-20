@@ -38,7 +38,7 @@
 
 /*-----------------------------------------------------------*/
 
-#define TIME_TO_WAIT_UI_PROVISION       ( 10000 )
+#define TIME_TO_WAIT_UI_PROVISION       ( 20000 )
 #define MAX_CERTIFICATE_LENGTH          ( 2048 )
 #define MAX_KEYT_LENGTH                 ( 2048 )  
 #define END_OF_RSA_KEY                  "-----END RSA PRIVATE KEY-----"
