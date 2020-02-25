@@ -1,0 +1,1537 @@
+From 8e62fb3902548ff99ca4d7dacb642f9c0782b84b Mon Sep 17 00:00:00 2001
+From: Andy Sun <smn@amazon.com>
+Date: Tue, 25 Feb 2020 14:12:02 +0800
+Subject: [PATCH] port user provision platform code
+
+---
+ .../cert_provision/include/cert_provision.h   |  21 +
+ .../cert_provision/src/cert_provision.c       | 586 ++++++++++++++++++
+ .../include/aws_clientcredential_keys.h       |  85 ++-
+ demos/common/mqtt/aws_hello_world.c           |  37 +-
+ .../common/application_code/aws_main.c        |  68 +-
+ demos/realtek/amebaz2/iar/application_is.ewp  |  37 +-
+ .../realtek/amebaz2/iar/inc/FreeRTOSConfig.h  |   3 +
+ lib/include/aws_mqtt_agent.h                  |  35 +-
+ lib/include/aws_mqtt_lib.h                    |  34 +-
+ lib/mqtt/aws_mqtt_agent.c                     |  16 -
+ lib/mqtt/aws_mqtt_lib.c                       |  41 --
+ .../component/common/network/dhcp/dhcps.c     |  10 +
+ .../component/common/network/dhcp/dhcps.h     |   1 +
+ tests/common/mqtt/aws_test_mqtt_agent.c       | 150 -----
+ 14 files changed, 800 insertions(+), 324 deletions(-)
+ create mode 100644 demos/common/cert_provision/include/cert_provision.h
+ create mode 100644 demos/common/cert_provision/src/cert_provision.c
+
+diff --git a/demos/common/cert_provision/include/cert_provision.h b/demos/common/cert_provision/include/cert_provision.h
+new file mode 100644
+index 0000000..52019b5
+--- /dev/null
++++ b/demos/common/cert_provision/include/cert_provision.h
+@@ -0,0 +1,21 @@
++#ifndef _CERT_PROVISION_H
++#define _CERT_PROVISION_H
++
++#define MAX_WIFI_SSID_LENGTH          ( 128 )
++#define MAX_WIFI_PASSWORD_LENGTH      ( 128 ) 
++
++
++typedef struct {
++    char wifi_ssid[MAX_WIFI_SSID_LENGTH];
++    char wifi_password[MAX_WIFI_PASSWORD_LENGTH];
++} WiFiInfo_t;
++
++
++void vConfigureAgentTask( void * pvParameters );
++
++int xCheckCredInFlash(void);
++
++void ReadWifiInFo(WiFiInfo_t * pWifiInfo);
++
++
++#endif /* _CERT_PROVISION_H */
+diff --git a/demos/common/cert_provision/src/cert_provision.c b/demos/common/cert_provision/src/cert_provision.c
+new file mode 100644
+index 0000000..75d45bd
+--- /dev/null
++++ b/demos/common/cert_provision/src/cert_provision.c
+@@ -0,0 +1,586 @@
++/* Standard includes. */
++#include <stdio.h>
++#include <string.h>
++
++/* FreeRTOS includes. */
++#include "FreeRTOS.h"
++#include "task.h"
++#include "semphr.h"
++
++/* TCP/IP abstraction includes. */
++#include "aws_secure_sockets.h"
++
++/* AWS library includes. */
++#include "aws_wifi.h"
++
++/* PKCS#11 includes. */
++#include "aws_pkcs11.h"
++#include "aws_pkcs11_config.h"
++
++/* Client credential includes. */
++#include "aws_clientcredential.h"
++#include "aws_default_root_certificates.h"
++
++/* Demo configuration */
++#include "aws_demo_config.h"
++#include "aws_dev_mode_key_provisioning.h"
++
++/* mbedTLS includes. */
++#include "mbedtls/base64.h"
++
++#include <wlan/wlan_test_inc.h>
++#include <wifi/wifi_conf.h>
++#include <wifi/wifi_util.h>
++#include "cert_provision.h"
++#include "flash_api.h"
++#include <device_lock.h>
++
++
++/*-----------------------------------------------------------*/
++
++#define TIME_TO_WAIT_UI_PROVISION       ( 20000 )
++#define MAX_CERTIFICATE_LENGTH          ( 2048 )
++#define MAX_KEYT_LENGTH                 ( 2048 )  
++#define END_OF_RSA_KEY                  "-----END RSA PRIVATE KEY-----"
++#define END_OF_CERTIFICATE              "-----END CERTIFICATE-----"
++#define WIFI_SSID_NOT_FOUND             "cert not found"
++#define WIFI_PASSWORD_NOT_FOUND         "password not found"
++#define RX_CREDENTIAL_TPYE_CERTS        ( 1 )
++#define RX_CREDENTIAL_TPYE_PRIV_KEY     ( 2 )
++#define RX_CREDENTIAL_TPYE_WIFI_SSID    ( 3 )
++#define RX_CREDENTIAL_TPYE_PASSWORD     ( 4 ) 
++#define WIFI_INFO_FLASH_OFFSET (0x1D6000) 
++#define PRIV_KEY_FLASH_OFFSET   (0x1D3000) //Flash location for Priv Key
++#define PUB_KEY_FLASH_OFFSET    (0x1D4000) //Flash location for Pub Key
++
++
++#define echoBUFFER_SIZES                ( 2000 ) /*_RB_ Want to be a multiple of the MSS but there is no MSS constant in the bastraction. */
++/* The number of instances of the echo client task to create. */
++#define echoNUM_ECHO_CLIENTS            ( 1 )
++/* The echo server is assumed to be on port 7, which is the standard echo
++ * protocol port. */
++#define echoECHO_PORT                   ( 7070 )
++
++/* The flag that turns on TLS for secure socket */
++#define configTCP_ECHO_TASKS_SINGLE_TASK_TLS_ENABLED    ( 1 )
++
++
++/*-----------------------------------------------------------*/
++
++/*
++ * PEM-encoded server certificate
++ *
++ * Must include the PEM header and footer:
++ * "-----BEGIN CERTIFICATE-----\n"\
++ * "...base64 data...\n"\
++ * "-----END CERTIFICATE-----\n"
++ */
++#if ( configTCP_ECHO_TASKS_SINGLE_TASK_TLS_ENABLED == 1 )
++/* default TLS Sercer certificate */
++static const char cTls_SERVER_CERTIFICATE_PEM[] = "-----BEGIN CERTIFICATE-----\n"
++"MIID5TCCAs2gAwIBAgIJAMBc77LhtML5MA0GCSqGSIb3DQEBCwUAMIGIMQswCQYD\n"
++"VQQGEwJVUzELMAkGA1UECAwCV0ExDjAMBgNVBAcMBVBsYWNlMRQwEgYDVQQKDAtZ\n"
++"b3VyQ29tcGFueTELMAkGA1UECwwCSVQxFjAUBgNVBAMMDXd3dy55b3Vycy5jb20x\n"
++"ITAfBgkqhkiG9w0BCQEWEnlvdXJFbWFpbEB5b3VyLmNvbTAeFw0xOTA4MjgwODI2\n"
++"NDdaFw0yMDA4MjcwODI2NDdaMIGIMQswCQYDVQQGEwJVUzELMAkGA1UECAwCV0Ex\n"
++"DjAMBgNVBAcMBVBsYWNlMRQwEgYDVQQKDAtZb3VyQ29tcGFueTELMAkGA1UECwwC\n"
++"SVQxFjAUBgNVBAMMDXd3dy55b3Vycy5jb20xITAfBgkqhkiG9w0BCQEWEnlvdXJF\n"
++"bWFpbEB5b3VyLmNvbTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAMCj\n"
++"YQ/VTCA+r9xgkx5HLcZ4F83aw1lwEXw0rvaOpoVTKJT0CgyE+9AmOC0hKnAsiboS\n"
++"yQBLeGgaG7nZLwtDKqJ/x8x/f1n0e5mj/oVfPytnCX/prd6Kbwm90CDziqONDj5k\n"
++"D0XBX1l6icBimxTj5ncESzw4NOBkSUF4qTYaE5L4DqqTWplpDT/0MJvLO0B/J8ck\n"
++"68sMh54/ZkedJmL17YOChIZIeYpXOU8ceyL8z3QBq0o22mWy6Y5GursriqoM7NDV\n"
++"IoQnKxy5xr8c4B/EXXMWmKLldkMB5g9Lp8537M1591Of1P+dyMLB/I03GzHtXPU3\n"
++"X1AHuQNHc589AENNOAcCAwEAAaNQME4wHQYDVR0OBBYEFHS+IhCTX2xEmGkgVBYS\n"
++"wlRwW2F3MB8GA1UdIwQYMBaAFHS+IhCTX2xEmGkgVBYSwlRwW2F3MAwGA1UdEwQF\n"
++"MAMBAf8wDQYJKoZIhvcNAQELBQADggEBAB8591oodDZUf5Fy1Xdcrv2tjHuk2Wbh\n"
++"qnzR586aapViuctGtyan0MEncV9XnTmE9vWPmfPKqrm+1AssTkzQsUYTfpIgpaIv\n"
++"/umVDvtm1/5N7iuWLQbUgjlt4z0BZSXZCLA3KccgO/92VEKOgwVy8/VBiv8oRSae\n"
++"uEsgftCQ4X+kAOEVhLdcxoJa7tDmcba+i11Vl+vJqu4qV36TPLzL89bRYqMSGzxC\n"
++"jS9dqtXKEgSu1e+Uk/MHdty9JZCvi/AtMtTahbMUVLBFc2GXfCGKawM2QvyVyXAr\n"
++"lbX0Tq/qUCYmZ1+vSCuK9bRBrEpQ0euLwJL3Fdxza3+Dl9/v2uhKz1A=\n"
++"-----END CERTIFICATE-----";
++    static const uint32_t ulTls_SERVER_CERTIFICATE_LENGTH = sizeof( cTls_SERVER_CERTIFICATE_PEM );
++#endif
++
++
++typedef struct PKCSContext
++{    
++    /* PKCS#11. */
++    CK_FUNCTION_LIST_PTR xP11FunctionList;
++    CK_SESSION_HANDLE xP11Session;
++    CK_OBJECT_HANDLE xP11PrivateKey;
++} PKCSContext_t;
++
++/*-----------------------------------------------------------*/
++
++void vWirteWifiInFo(WiFiInfo_t wifi_info)
++{
++    flash_t flash;
++    
++    device_mutex_lock(RT_DEV_LOCK_FLASH);
++    flash_erase_sector(&flash, WIFI_INFO_FLASH_OFFSET);
++    flash_stream_write(&flash, WIFI_INFO_FLASH_OFFSET, sizeof(WiFiInfo_t), (uint8_t *) &wifi_info);
++    device_mutex_unlock(RT_DEV_LOCK_FLASH);
++}
++
++void vClearTLSTempInfo(void)
++{
++    flash_t flash;
++    
++    device_mutex_lock(RT_DEV_LOCK_FLASH);
++    flash_erase_sector(&flash, PRIV_KEY_FLASH_OFFSET);
++    flash_erase_sector(&flash, PUB_KEY_FLASH_OFFSET);
++    device_mutex_unlock(RT_DEV_LOCK_FLASH);
++}
++
++void vReadWifiInFo(WiFiInfo_t *pWifiInfo)
++{
++    flash_t flash;
++    WiFiInfo_t Wifi_info;
++    
++    if (pWifiInfo == NULL) {
++        return;
++    }
++    device_mutex_lock(RT_DEV_LOCK_FLASH);
++    flash_stream_read(&flash, WIFI_INFO_FLASH_OFFSET, sizeof(WiFiInfo_t), (uint8_t *) pWifiInfo);
++    device_mutex_unlock(RT_DEV_LOCK_FLASH);
++    configPRINTF( ( "wifi_info.wifi_ssid len:%d \r\n", strlen(Wifi_info.wifi_ssid) ) );
++    configPRINTF( ( "wifi_info.wifi_password len:%d \r\n", strlen(Wifi_info.wifi_password )) );
++}
++
++
++/* Set the SoftAP network parameters for WIFI_ConfigureAP() test. */
++static inline void prvSetSoftAPNetworkParameters( WIFINetworkParams_t * pxSoftAPNetworkParams )
++{
++    pxSoftAPNetworkParams->pcSSID = wificonfigACCESS_POINT_SSID_PREFIX;
++    pxSoftAPNetworkParams->ucSSIDLength =
++    sizeof( wificonfigACCESS_POINT_SSID_PREFIX );
++    pxSoftAPNetworkParams->pcPassword = wificonfigACCESS_POINT_PASSKEY;
++    pxSoftAPNetworkParams->ucPasswordLength =
++    sizeof( wificonfigACCESS_POINT_PASSKEY );
++    pxSoftAPNetworkParams->xSecurity = wificonfigACCESS_POINT_SECURITY;
++    pxSoftAPNetworkParams->cChannel = wificonfigACCESS_POINT_CHANNEL;
++}
++
++void prvWifiAPStart( void )
++{
++    WIFINetworkParams_t xNetworkParams = { 0 };
++
++    /* Set the network parameters with valid parameters */
++    prvSetSoftAPNetworkParameters( &xNetworkParams );
++    
++    WIFI_ConfigureAP( &xNetworkParams );
++}
++
++int xgetConnectedClient( void )
++{
++    int client_number;
++    int ret = -1;
++    struct {
++        int    count;
++        rtw_mac_t mac_list[AP_STA_NUM];
++    } client_info;
++    client_info.count = AP_STA_NUM;
++    wifi_get_associated_client_list(&client_info, sizeof(client_info));
++    configPRINTF(("\n\rAssociated Client List:"));
++
++    if(client_info.count == 0) {
++        configPRINTF(("\n\rClient Num: 0\n\r"));
++    } else {
++        configPRINTF(("\n\rClient Num: %d", client_info.count));
++        ret = client_info.count;
++        for( client_number=0; client_number < client_info.count; client_number++ ) {
++            configPRINTF(("\n\rClient %d:", client_number + 1));
++            configPRINTF(("\n\r\tMAC => "MAC_FMT"", MAC_ARG(client_info.mac_list[client_number].octet)));
++        }
++        configPRINTF(("\n\r"));
++    }
++
++    return ret;
++}
++
++static int xCheckClientCredential( PKCSContext_t * pxCtx )
++{
++    BaseType_t xResult = 0;
++    CK_SLOT_ID xSlotId = 0;
++    CK_ULONG xCount = 1;
++    CK_ATTRIBUTE xTemplate = { 0 };
++
++    /* Get the default private key storage ID. */
++    if( 0 == xResult )
++    {
++        xResult = ( BaseType_t ) pxCtx->xP11FunctionList->C_GetSlotList( CK_TRUE,
++                                                                         &xSlotId,
++                                                                         &xCount );
++        configPRINTF(("C_GetSlotList ret:%d\r\n", xResult));
++    } else {
++        configPRINTF(("C_GetSlotList failed\r\n"));
++    }
++
++    /* Start a private session with the P#11 module. */
++    if( 0 == xResult )
++    {
++        xResult = ( BaseType_t ) pxCtx->xP11FunctionList->C_OpenSession( xSlotId,
++                                                                         CKF_SERIAL_SESSION,
++                                                                         NULL,
++                                                                         NULL,
++                                                                         &pxCtx->xP11Session );
++        configPRINTF(("C_OpenSession ret:%d\r\n", xResult));
++    } else {
++        configPRINTF(("C_OpenSession failed\r\n"));
++    }
++
++    /* Get the handle of the device private key. */
++    if( 0 == xResult )
++    {
++        xTemplate.type = CKA_LABEL;
++        xTemplate.ulValueLen = sizeof( pkcs11configLABEL_DEVICE_PRIVATE_KEY_FOR_TLS );
++        xTemplate.pValue = &pkcs11configLABEL_DEVICE_PRIVATE_KEY_FOR_TLS;
++        xResult = ( BaseType_t ) pxCtx->xP11FunctionList->C_FindObjectsInit( pxCtx->xP11Session,
++                                                                             &xTemplate,
++                                                                             1 );
++        configPRINTF(("C_FindObjectsInit ret:%d\r\n", xResult));
++    } else {
++        configPRINTF(("C_FindObjectsInit failed\r\n"));
++    }    
++
++    if( 0 == xResult )
++    {
++        xResult = ( BaseType_t ) pxCtx->xP11FunctionList->C_FindObjects( pxCtx->xP11Session,
++                                                                         &pxCtx->xP11PrivateKey,
++                                                                         1,
++                                                                         &xCount );
++        configPRINTF(("C_FindObjects ret:%d\r\n", xResult));
++    } else {
++        configPRINTF(("C_FindObjects failed\r\n"));
++    } 
++
++    if( 0 == xResult )
++    {
++        xResult = ( BaseType_t ) pxCtx->xP11FunctionList->C_FindObjectsFinal( pxCtx->xP11Session );
++        configPRINTF(("C_FindObjectsFinal ret:%d\r\n", xResult));
++    } else {
++        configPRINTF(("C_FindObjectsFinal failed\r\n"));
++    } 
++
++    pxCtx->xP11FunctionList->C_CloseSession( pxCtx->xP11Session );
++
++    return xResult;
++}
++
++
++int xCheckCredInFlash( void )
++{
++    BaseType_t xResult = 0;
++    PKCSContext_t * pxCtx = NULL;
++    CK_C_GetFunctionList xCkGetFunctionList = NULL;
++
++	/* Allocate an internal context. */
++    pxCtx = ( PKCSContext_t * ) pvPortMalloc( sizeof( PKCSContext_t ) ); /*lint !e9087 !e9079 Allow casting void* to other types. */
++
++    /* Initialize PKCS module. */
++    if( NULL != pxCtx )
++    {
++        memset( pxCtx, 0, sizeof( PKCSContext_t ) );
++
++        /* Get the function pointer list for the PKCS#11 module. */
++        xCkGetFunctionList = C_GetFunctionList;
++        xResult = ( BaseType_t ) xCkGetFunctionList( &pxCtx->xP11FunctionList );
++
++        /* Ensure that the PKCS #11 module is initialized. */
++        if( 0 == xResult )
++        {
++            xResult = ( BaseType_t ) pxCtx->xP11FunctionList->C_Initialize( NULL );
++            configPRINTF(("C_Initialize ret:%d\r\n", xResult));
++            /* It is ok if the module was previously initialized. */
++            if( xResult == CKR_CRYPTOKI_ALREADY_INITIALIZED )
++            {
++                xResult = CKR_OK;
++            }
++        }
++    }
++    else
++    {
++        configPRINTF(("provision_cert_from_flash memory failed\r\n"));
++        xResult = ( BaseType_t ) CKR_HOST_MEMORY;
++    }
++    
++    /* Check Client Credential exist or not. */
++    if( 0 == xResult )
++    {
++        xResult = xCheckClientCredential( pxCtx );
++    }
++    
++    vPortFree(pxCtx);
++    pxCtx = NULL;
++
++    return xResult;    
++}
++
++uint32_t prvRxCredeantialsFromSocket( char * buffer,  int type, Socket_t xSocket )
++{
++
++    char * pcReceivedString;
++    char cRxBuffers[ echoBUFFER_SIZES ];    
++    int xReceivedBytes = 0;
++    bool fgSucess = 0;
++    int xReturned = 0;
++    int MaxLoopCount = 1000;
++    int counter = 0;
++    int ret = 0;
++    
++    pcReceivedString = &( cRxBuffers[0] );
++    memset( ( void * ) pcReceivedString, 0x00, echoBUFFER_SIZES );
++    xReceivedBytes = 0;
++
++    /* Receive data echoed back to the socket. */
++    while( fgSucess == 0 && counter < MaxLoopCount )
++    {
++        counter++;
++        memset( ( void * ) pcReceivedString, 0x00, echoBUFFER_SIZES );
++        xReturned = SOCKETS_Recv( xSocket,            /* The socket being received from. */
++                                  pcReceivedString ,  /* The buffer into which the received data will be written. */
++                                  sizeof(cRxBuffers), /* The size of the buffer provided to receive the data. */
++                                  0 );                /* No flags. */
++
++        configPRINTF( ( "Received string %s\r\n", pcReceivedString ) );
++        configPRINTF( ( "Received string len %d.\r\n", strlen(pcReceivedString) ) );
++        configPRINTF( ( "Received bytels %d.\r\n", xReceivedBytes ) );
++        configPRINTF( ( "xReturned %d.\r\n", xReturned ) );
++        if (xReturned > 0) {
++            memcpy( &buffer[xReceivedBytes], pcReceivedString, xReturned );
++            xReceivedBytes += xReturned;
++        
++            if (type == RX_CREDENTIAL_TPYE_PRIV_KEY) {
++                if (strlen(pcReceivedString) > strlen(END_OF_RSA_KEY)) {
++                    ret = strncmp(END_OF_RSA_KEY, pcReceivedString + strlen(pcReceivedString) - strlen(END_OF_RSA_KEY), strlen(END_OF_RSA_KEY));
++                    configPRINTF( ( "type %d, compare ret %d.\r\n", type, ret ) );
++                    if( ret == 0 ) {
++                        fgSucess = 1;
++                        break;
++                    }
++                }
++            }
++            else if (type == RX_CREDENTIAL_TPYE_CERTS) {
++                ret = strncmp(END_OF_CERTIFICATE, pcReceivedString + strlen(pcReceivedString) - strlen(END_OF_CERTIFICATE), strlen(END_OF_CERTIFICATE));
++                configPRINTF( ( "type %d, compare ret %d.\r\n", type, ret ) );
++                if (strlen(pcReceivedString) > strlen(END_OF_CERTIFICATE)) {
++                    if( ret == 0 ) {
++                        fgSucess = 1;
++                        break;
++                    }
++                }
++            }
++            else if (type == RX_CREDENTIAL_TPYE_WIFI_SSID) {
++                fgSucess = 1;
++                ret = strncmp(WIFI_SSID_NOT_FOUND, pcReceivedString, strlen(WIFI_SSID_NOT_FOUND));
++                configPRINTF( ( "type %d, compare ret %d.\r\n", type, ret ) );
++                // set received length to 0 if it's identical with WIFI_SSID_NOT_FOUND.
++                if( ret == 0 ) {
++                    xReceivedBytes = 0;
++                }
++                break;
++            }
++            else if (type == RX_CREDENTIAL_TPYE_PASSWORD) {
++                fgSucess = 1;
++                ret = strncmp(WIFI_PASSWORD_NOT_FOUND, pcReceivedString, strlen(WIFI_PASSWORD_NOT_FOUND));
++                configPRINTF( ( "type %d, compare ret %d.\r\n", type, ret ) );
++                // set received length to 0 if it's identical with WIFI_PASSWORD_NOT_FOUND.
++                if( ret == 0 ) {
++                    xReceivedBytes = 0;
++                }
++                break;
++            }
++       }
++    }
++    if (!fgSucess) {
++        if (counter >= MaxLoopCount) {
++            configPRINTF(("timed out after retry to receive credenatials type %d after %d times\r\n", type, counter));
++        }
++
++        configPRINTF(("credenatials received fail for type %d\r\n", type));
++        return 0;
++    }
++    else {
++        configPRINTF(("credenatials received secuss for type %d\r\n", type));
++    }
++    return xReceivedBytes;
++}
++
++
++static void prvConfigureAgentTask( void * pvParameters )
++{   
++    Socket_t xSocket;
++    SocketsSockaddr_t xEchoServerAddress;
++    volatile uint32_t ulTxCount = 0UL;
++    BaseType_t xReceivedBytes, xReturned;
++    char * pcReceivedString;
++    TickType_t xTimeOnEntering;
++    char  local_certificate_pem[MAX_CERTIFICATE_LENGTH];
++    uint32_t   local_certificate_pem_length = 0;
++    char  local_privet_key[MAX_KEYT_LENGTH];
++    uint32_t   local_privet_key_length = 0;
++    ProvisioningParams_t xParams;
++    int client_ip; 
++    uint32_t   local_wifi_ssid_length = 0;
++    uint32_t   local_wifi_password_length = 0;
++    WiFiInfo_t wifi_info;
++    
++    if (pvParameters == NULL) {
++        return;
++    }
++    client_ip = * (int *) pvParameters;
++    memset( &local_certificate_pem[0], 0x00, MAX_CERTIFICATE_LENGTH );
++    memset( &local_privet_key[0], 0x00, MAX_KEYT_LENGTH );
++    /* Rx and Tx time outs are used to ensure the sockets do not wait too long for
++     * missing data. */
++    TickType_t xReceiveTimeOut = pdMS_TO_TICKS( 2000 );
++    TickType_t xSendTimeOut = pdMS_TO_TICKS( 2000 );
++
++
++    #if ( ipconfigUSE_TCP_WIN == 1 )
++        WinProperties_t xWinProps;
++
++        /* Fill in the buffer and window sizes that will be used by the socket. */
++        xWinProps.lTxBufSize = ipconfigTCP_TX_BUFFER_LENGTH;
++        xWinProps.lTxWinSize = configECHO_CLIENT_TX_WINDOW_SIZE;
++        xWinProps.lRxBufSize = ipconfigTCP_RX_BUFFER_LENGTH;
++        xWinProps.lRxWinSize = configECHO_CLIENT_RX_WINDOW_SIZE;
++    #endif /* ipconfigUSE_TCP_WIN */  
++
++    /* Echo requests are sent to the echo server.  The address of the echo
++     * server is configured by the constants configECHO_SERVER_ADDR0 to
++     * configECHO_SERVER_ADDR3 in FreeRTOSConfig.h. */
++    xEchoServerAddress.usPort = SOCKETS_htons( echoECHO_PORT );
++
++    xEchoServerAddress.ulAddress = SOCKETS_inet_addr_quick( (client_ip >> 0) & 0xff,
++                                                            (client_ip >> 8) & 0xff,
++                                                            (client_ip >> 16) & 0xff,
++                                                            (client_ip >> 24) & 0xff);
++
++    /* Create a TCP socket. */
++    xSocket = SOCKETS_Socket( SOCKETS_AF_INET, SOCKETS_SOCK_STREAM, SOCKETS_IPPROTO_TCP );
++    configASSERT( xSocket != SOCKETS_INVALID_SOCKET );
++
++    /* Set a time out so a missing reply does not cause the task to block
++     * indefinitely. */
++    SOCKETS_SetSockOpt( xSocket, 0, SOCKETS_SO_RCVTIMEO, &xReceiveTimeOut, sizeof( xReceiveTimeOut ) );
++    SOCKETS_SetSockOpt( xSocket, 0, SOCKETS_SO_SNDTIMEO, &xSendTimeOut, sizeof( xSendTimeOut ) );
++
++    #if ( ipconfigUSE_TCP_WIN == 1 )
++        {
++            /* Set the window and buffer sizes. */
++            SOCKETS_SetSockOpt( xSocket, 0, FREERTOS_SO_WIN_PROPERTIES, ( void * ) &xWinProps, sizeof( xWinProps ) );
++        }
++    #endif /* ipconfigUSE_TCP_WIN */
++
++    #if ( configTCP_ECHO_TASKS_SINGLE_TASK_TLS_ENABLED == 1 )
++        {
++            /* Set the socket to use TLS. */
++            SOCKETS_SetSockOpt( xSocket, 0, SOCKETS_SO_REQUIRE_TLS, NULL, ( size_t ) 0 );
++            SOCKETS_SetSockOpt( xSocket, 0, SOCKETS_SO_TRUSTED_SERVER_CERTIFICATE, cTls_SERVER_CERTIFICATE_PEM, ulTls_SERVER_CERTIFICATE_LENGTH );
++        }
++    #endif /* configTCP_ECHO_TASKS_SINGLE_TASK_TLS_ENABLED */
++
++    /* Connect to the echo server. */
++    configPRINTF( ( "Connecting to echo server\r\n" ) );
++
++    if( SOCKETS_Connect( xSocket, &xEchoServerAddress, sizeof( xEchoServerAddress ) ) == 0 )
++    {
++        configPRINTF( ( "Connected to echo server\r\n" ) );
++        /* Send a number of echo requests. */
++        local_privet_key_length = prvRxCredeantialsFromSocket(local_privet_key, RX_CREDENTIAL_TPYE_PRIV_KEY, xSocket);
++        local_certificate_pem_length = prvRxCredeantialsFromSocket(local_certificate_pem, RX_CREDENTIAL_TPYE_CERTS, xSocket);
++        local_wifi_ssid_length = prvRxCredeantialsFromSocket(wifi_info.wifi_ssid, RX_CREDENTIAL_TPYE_WIFI_SSID, xSocket);
++        local_wifi_password_length = prvRxCredeantialsFromSocket(wifi_info.wifi_password, RX_CREDENTIAL_TPYE_PASSWORD, xSocket);
++
++        configPRINTF( ( "local_privet_key_length %d \r\n",local_privet_key_length ) );
++        configPRINTF( ( "local_certificate_pem_length %d \r\n",local_certificate_pem_length ) );
++        configPRINTF( ( "wifi_info.wifi_ssid %s \r\n",wifi_info.wifi_ssid ) );
++        configPRINTF( ( "wifi_info.wifi_password %s \r\n",wifi_info.wifi_password ) );
++
++        xParams.ulClientPrivateKeyType = CKK_RSA;
++        xParams.pcClientPrivateKey = ( uint8_t * ) &local_privet_key;
++        xParams.ulClientPrivateKeyLength = local_privet_key_length;
++        xParams.pcClientCertificate = ( uint8_t * ) &local_certificate_pem[0];
++        xParams.ulClientCertificateLength = local_certificate_pem_length;
++        
++        /* write wifi credential to flash */
++        vWirteWifiInFo(wifi_info);
++        /* wirite client credential by pkcs */
++        vAlternateKeyProvisioning( &xParams );
++        /* Finished using the connected socket, initiate a graceful close:
++         * FIN, FIN+ACK, ACK. */
++        configPRINTF( ( "Shutting down connection to echo server.\r\n" ) );
++        SOCKETS_Shutdown( xSocket, SOCKETS_SHUT_RDWR );
++
++        /* Expect SOCKETS_Recv() to return an error once the shutdown is
++         * complete. */
++        xTimeOnEntering = xTaskGetTickCount();
++        do
++        {
++            xReturned = SOCKETS_Recv( xSocket,                    /* The socket being received from. */
++                                      &( pcReceivedString[ 0 ] ), /* The buffer into which the received data will be written. */
++                                      echoBUFFER_SIZES,           /* The size of the buffer provided to receive the data. */
++                                      0 );
++
++            if( xReturned < 0 )
++            {
++                break;
++            }
++        } while( ( xTaskGetTickCount() - xTimeOnEntering ) < xReceiveTimeOut );
++    }
++    else
++    {
++        configPRINTF( ( "Echo demo failed to connect to echo server %d.%d.%d.%d echoECHO_PORT %d \r\n",
++                        (client_ip >> 0) & 0xff,
++                        (client_ip >> 8) & 0xff,
++                        (client_ip >> 16) & 0xff,
++                        (client_ip >> 24) & 0xff,
++                        echoECHO_PORT ) );
++        /* clear temp certificate for TLS connection. */
++        vClearTLSTempInfo();
++    }
++    configPRINTF(("closing sockets \n"));
++    /* Close this socket before looping back to create another. */
++    xReturned = SOCKETS_Close( xSocket );
++    configASSERT( xReturned == SOCKETS_ERROR_NONE );
++    configPRINTF(("socket closed %d\n",xReturned));
++
++    configPRINTF(("task done \n"));
++
++}
++
++
++
++
++void vConfigureAgentTask( void * pvParameters )
++{
++
++    /* Start a WiFi AP Mode before running the tests. */
++    prvWifiAPStart();
++    int client = 0;
++    int client_ip = 0;
++    for(;;) {
++        client = xgetConnectedClient();
++        if (client > 0) {
++            vTaskDelay(3000);
++            break;
++        }
++        vTaskDelay(1000);
++    }
++    client_ip = dhcp_get_latest_client_ip();
++    configPRINTF(("client ip:%d.%d.%d.%d\r\n", 
++        (client_ip >> 0) & 0xff,
++        (client_ip >> 8) & 0xff,
++        (client_ip >> 16) & 0xff,
++        (client_ip >> 24) & 0xff));
++    vTaskDelay( TIME_TO_WAIT_UI_PROVISION );
++    prvConfigureAgentTask( (void *) &client_ip );    
++    
++    /* This task has finished.  FreeRTOS does not allow a task to run off the
++     * end of its implementing function, so the task must be deleted. */
++    vTaskDelete( NULL );
++}
++
+diff --git a/demos/common/include/aws_clientcredential_keys.h b/demos/common/include/aws_clientcredential_keys.h
+index a1f1110..59584bf 100644
+--- a/demos/common/include/aws_clientcredential_keys.h
++++ b/demos/common/include/aws_clientcredential_keys.h
+@@ -4,46 +4,89 @@
+ #include <stdint.h>
+ 
+ /*
+- * PEM-encoded client certificate
++ * PEM-encoded client certificate.
+  *
+  * Must include the PEM header and footer:
+  * "-----BEGIN CERTIFICATE-----\n"\
+  * "...base64 data...\n"\
+- * "-----END CERTIFICATE-----\n"
++ * "-----END CERTIFICATE-----"
+  */
+-#define keyCLIENT_CERTIFICATE_PEM "Paste client certificate here."
++
++/* This is default client certificate, it's invalid but used to pass TLS Connect validation*/
++#define keyCLIENT_CERTIFICATE_PEM \
++"-----BEGIN CERTIFICATE-----\n"\
++"MIIDWjCCAkKgAwIBAgIVAOTXUSRQWX05l+abaCELTwe6vhfEMA0GCSqGSIb3DQEB\n"\
++"CwUAME0xSzBJBgNVBAsMQkFtYXpvbiBXZWIgU2VydmljZXMgTz1BbWF6b24uY29t\n"\
++"IEluYy4gTD1TZWF0dGxlIFNUPVdhc2hpbmd0b24gQz1VUzAeFw0xOTExMDYwNzE2\n"\
++"NTRaFw00OTEyMzEyMzU5NTlaMB4xHDAaBgNVBAMME0FXUyBJb1QgQ2VydGlmaWNh\n"\
++"dGUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCr3lK08aspW1UjvVcS\n"\
++"B6pV9s66DEdHpA1934Du+RTE3fClqqDDYZkvEV1t+jRElFEEp/bFsmYb3FrskOJj\n"\
++"dpBMB/rZ/auXJo3+IgGYNiwmEY0f9IMj9zIrNK1sgO0VdbBrNiYLarfCMpeYkmuL\n"\
++"d+GLj1CWyWBQSzA8QBrcygInzjZoAKRWIJl8PXKahgb2zsdbHEG9Sa9wjPWhzItr\n"\
++"gJBJndz2dgQ0gp9hXUW0CafSbvWLruuXzlJOXl7RawkKl3XabLACMPQ9hLw0kCy8\n"\
++"T1hzKETOdUKEKiKDUNABPOxsfsugaenPxVeMR/C00ydTxU0TApTXJ6V9Sv6FTBWx\n"\
++"klPlAgMBAAGjYDBeMB8GA1UdIwQYMBaAFGrzv/GVJulRXO6ma5DtVwLUuwouMB0G\n"\
++"A1UdDgQWBBRpO2os2FYysQBgxVfkpf/H8MMV/zAMBgNVHRMBAf8EAjAAMA4GA1Ud\n"\
++"DwEB/wQEAwIHgDANBgkqhkiG9w0BAQsFAAOCAQEAQ+vndRMmjELWaiXj8nZUkJws\n"\
++"JFThCYkghZkqE8eZaAzuHDhDEMlcfzxuRhsBdEimwXfteW+lE0OhIHhdk6bm6eLK\n"\
++"HJG4Lh17ao8duhf/QBVFkFVXJXTfChRfmlrA+If5EIrTQxIkrXwNOzfDT30DXcgQ\n"\
++"zxPU34ErECGTxh2qaftfQ2tbZZFKxh2qLbNt7uHdEfdaHaN2I8Wa+ZI8M7dlRR3U\n"\
++"mJAwY/cFMMMKXFYbGE+3je2waSnN90hAIPf5KIV2oLfxJ2CFiH3wieyrDkHdoPAu\n"\
++"jjYEjoAr15MowYqtVLv9GpXfoTCsVfMx6mG290czCyE8sNBa0q1mUb3+bNRgYQ==\n"\
++"-----END CERTIFICATE-----"
+ 
+ /*
+- * PEM-encoded issuer certificate for AWS IoT Just In Time Registration (JITR).
+- * This is required if you're using JITR, since the issuer (Certificate 
+- * Authority) of the client certificate is used by the server for routing the 
+- * device's initial request. (The device client certificate must always be 
+- * sent as well.) For more information about JITR, see:
+- *  https://docs.aws.amazon.com/iot/latest/developerguide/jit-provisioning.html, 
+- *  https://aws.amazon.com/blogs/iot/just-in-time-registration-of-device-certificates-on-aws-iot/.
++ * PEM-encoded client private key.
+  *
+- * If you're not using JITR, set below to NULL.
+- * 
+  * Must include the PEM header and footer:
+- * "-----BEGIN CERTIFICATE-----\n"\
++ * "-----BEGIN RSA PRIVATE KEY-----\n"\
+  * "...base64 data...\n"\
+- * "-----END CERTIFICATE-----\n"
++ * "-----END RSA PRIVATE KEY-----"
+  */
+-#define keyJITR_DEVICE_CERTIFICATE_AUTHORITY_PEM  NULL
++
++/* This is default client certificate, it's invalid but used to pass TLS Connect validation*/
++#define keyCLIENT_PRIVATE_KEY_PEM \
++"-----BEGIN RSA PRIVATE KEY-----\n"\
++"MIIEogIBAAKCAQEAq95StPGrKVtVI71XEgeqVfbOugxHR6QNfd+A7vkUxN3wpaqg\n"\
++"w2GZLxFdbfo0RJRRBKf2xbJmG9xa7JDiY3aQTAf62f2rlyaN/iIBmDYsJhGNH/SD\n"\
++"I/cyKzStbIDtFXWwazYmC2q3wjKXmJJri3fhi49QlslgUEswPEAa3MoCJ842aACk\n"\
++"ViCZfD1ymoYG9s7HWxxBvUmvcIz1ocyLa4CQSZ3c9nYENIKfYV1FtAmn0m71i67r\n"\
++"l85STl5e0WsJCpd12mywAjD0PYS8NJAsvE9YcyhEznVChCoig1DQATzsbH7LoGnp\n"\
++"z8VXjEfwtNMnU8VNEwKU1yelfUr+hUwVsZJT5QIDAQABAoIBABFiYpFE5KBBScJc\n"\
++"s4LyXYtmdJCjD06yzF6QDfWeIjirjlzjfnFk3N7C7eVi6oiJTAyhhLeIjQWCa3wE\n"\
++"R7Hx2zSllf0YyJN4ZeJvxCOGTz7mhZTW4bDwnxV5tZUFEXYbOmYNyxlaiQ3OmkDn\n"\
++"hpNL4/d+3pLx+ZkFkfJ2NYFhuYgXDD/1kL1Dgl8AVeP6DNhTMrdA8/8aVLnkycpI\n"\
++"bQAtkUAhm2GuYiRSQzX60W4EqFy5uZ8axuR3mQnoDxytM7gawMT0GgF0QNjcAHn1\n"\
++"kBk+OOArHSRHUC6oeuFLL78WxPSOFTEKjOj+GiOPSxhRwVv6IuzrnYELjRaXoTlK\n"\
++"7aSwUaECgYEA1BTJl4xylkEO3VGRLWGi2Rq4tzlihfB/tMJFEE30t781AGwKsqSZ\n"\
++"fxfIM7sj97WGqgto0fmDB1yBTNVrnSK6qZJF8S/ISoZSofGR/fJI/P7Hc3SAJl+f\n"\
++"WGstoeu+JYQ2yV/H92EEOBR2EjFVJU6S9xD+73l6Pcr4nuqAei1oZ20CgYEAz3W1\n"\
++"TfF8SVeT4gHc1hezDdzERR2+xipgcv8wE7YQ8ju/9t3/gOF+yijVPOIl0Wz1pLc2\n"\
++"TisTvYFnUppR+M/I/eEB0/aVhpGWYY1onL4eN/zuukf7gLSjwS6mNcIjImGeQMVB\n"\
++"58qqS2PWZp59+0+iI6+ozLE+uF1Ln1Pi73LJe1kCgYAeM7ultl2XIjqwr+4BzXa4\n"\
++"fkKx7R0nv+Ef586YDNH93N/6aGh5mlE1tThQjaUIoLRFwQwzYtoTEUxkmbwSi6CT\n"\
++"h34oY8qdOlXINDO7O2bDiLD0szGQxWtW1ySPe5f/lb2LnfVHOGy2Y8uQua/LeU4a\n"\
++"mzQC/IS5Cg+v6etT+uV0XQKBgDgaUeR5KK5A08orzMfM8uwNxroWODAo55pRrnO2\n"\
++"KdEIHXqqQF1fHcWX00q6sZV4DNn1fecXuSfnZcSt3PsXXfhiL/ddWMRifLN25VJ2\n"\
++"C4ACk6CmtLnyn9IvRl2FWbEDiyNi9Na1NOZcYm+v7svWljdmWpS4XgjHmhrFObqd\n"\
++"ZSVJAoGAFIcznhrvudDj/b9oYqYLaqGZJUGs9xD0utIDlo/aAiGcCCEEqxNWuK4Z\n"\
++"POBjPx+ezulNyCMgINdHDstiz/pDm609vd/LhwgSqlw7b1yk/HFF+TzkP4t8XhQr\n"\
++"DAezM3WPxRUYnUfKi8JVq32b2v6Gg7zFhXM3zrnsGeaw1uE5G7s=\n"\
++"-----END RSA PRIVATE KEY-----"
+ 
+ /*
+- * PEM-encoded client private key.
++ * PEM-encoded Just-in-Time Registration (JITR) certificate (optional).
+  *
+- * Must include the PEM header and footer:
+- * "-----BEGIN RSA PRIVATE KEY-----\n"\
++ * If used, must include the PEM header and footer:
++ * "-----BEGIN CERTIFICATE-----\n"\
+  * "...base64 data...\n"\
+- * "-----END RSA PRIVATE KEY-----\n"
++ * "-----END CERTIFICATE-----"
+  */
+-#define keyCLIENT_PRIVATE_KEY_PEM "Paste client private key here."
++#define keyJITR_DEVICE_CERTIFICATE_AUTHORITY_PEM  NULL
+ 
+ /* The constants above are set to const char * pointers defined in aws_dev_mode_key_provisioning.c,
+  * and externed here for use in C files.  NOTE!  THIS IS DONE FOR CONVENIENCE
+- * DURING AN EVALUATION PHASE AND IS NOT GOOD PRACTICE FOR PRODUCTION SYSTEMS 
++ * DURING AN EVALUATION PHASE AND IS NOT GOOD PRACTICE FOR PRODUCTION SYSTEMS
+  * WHICH MUST STORE KEYS SECURELY. */
+ extern const char clientcredentialCLIENT_CERTIFICATE_PEM[];
+ extern const char* clientcredentialJITR_DEVICE_CERTIFICATE_AUTHORITY_PEM;
+diff --git a/demos/common/mqtt/aws_hello_world.c b/demos/common/mqtt/aws_hello_world.c
+index 3e7257e..1cdd9e0 100644
+--- a/demos/common/mqtt/aws_hello_world.c
++++ b/demos/common/mqtt/aws_hello_world.c
+@@ -113,32 +113,6 @@
+  */
+ #define echoDONT_BLOCK           ( ( TickType_t ) 0 )
+ 
+-
+-#define IOT_DEMO_MQTT_TOPIC_PREFIX           "iotdemo"
+-
+-/**
+- * @brief The Last Will and Testament topic name in this demo.
+- *
+- * The MQTT server will publish a message to this topic name if this client is
+- * unexpectedly disconnected.
+- */
+-#define WILL_TOPIC_NAME                          IOT_DEMO_MQTT_TOPIC_PREFIX "/will"
+-
+-/**
+- * @brief The length of #WILL_TOPIC_NAME.
+- */
+-#define WILL_TOPIC_NAME_LENGTH                   ( ( uint16_t ) ( sizeof( WILL_TOPIC_NAME ) - 1 ) )
+-
+-/**
+- * @brief The message to publish to #WILL_TOPIC_NAME.
+- */
+-#define WILL_MESSAGE                             "MQTT demo unexpectedly disconnected."
+-
+-/**
+- * @brief The length of #WILL_MESSAGE.
+- */
+-#define WILL_MESSAGE_LENGTH                      ( ( size_t ) ( sizeof( WILL_MESSAGE ) - 1 ) )
+-
+ /*-----------------------------------------------------------*/
+ 
+ /**
+@@ -210,7 +184,6 @@ static BaseType_t prvCreateClientAndConnectToBroker( void )
+ {
+     MQTTAgentReturnCode_t xReturned;
+     BaseType_t xReturn = pdFAIL;
+-    MQTTPublishParams_t willInfo;
+     MQTTAgentConnectParams_t xConnectParameters =
+     {
+         clientcredentialMQTT_BROKER_ENDPOINT, /* The URL of the MQTT broker to connect to. */
+@@ -223,17 +196,9 @@ static BaseType_t prvCreateClientAndConnectToBroker( void )
+         NULL,                                 /* User data supplied to the callback. Can be NULL. */
+         NULL,                                 /* Callback used to report various events. Can be NULL. */
+         NULL,                                 /* Certificate used for secure connection. Can be NULL. */
+-        0,                                    /* Size of certificate used for secure connection. */
+-        &willInfo                             /* MQTT LWT information. */
++        0                                     /* Size of certificate used for secure connection. */
+     };
+ 
+-    /* Add topic, message for MQTT LWT.  */
+-    willInfo.pucTopic = WILL_TOPIC_NAME;
+-    willInfo.usTopicLength = WILL_TOPIC_NAME_LENGTH;
+-    willInfo.pvData = WILL_MESSAGE;
+-    willInfo.ulDataLength = WILL_MESSAGE_LENGTH;
+-    willInfo.xQos = eMQTTQoS0;
+-
+     /* Check this function has not already been executed. */
+     configASSERT( xMQTTHandle == NULL );
+ 
+diff --git a/demos/realtek/amebaz2/common/application_code/aws_main.c b/demos/realtek/amebaz2/common/application_code/aws_main.c
+index 82ec024..5c7d8d7 100644
+--- a/demos/realtek/amebaz2/common/application_code/aws_main.c
++++ b/demos/realtek/amebaz2/common/application_code/aws_main.c
+@@ -38,6 +38,8 @@
+ #include "aws_wifi.h"
+ #include "aws_clientcredential.h"
+ #include "aws_application_version.h"
++/* cert provision initialization */
++#include "cert_provision.h"
+ 
+ int errno = 0;
+ 
+@@ -241,7 +243,6 @@ static void prvDaemonTask( void * pvParameters )
+         /* Connect to the Wi-Fi before running the tests. */
+         prvWifiConnect();
+         
+-        vDevModeKeyProvisioning();
+         /* Start the demo tasks. */
+         DEMO_RUNNER_RunDemos();
+     }
+@@ -251,13 +252,46 @@ static void prvDaemonTask( void * pvParameters )
+ void vApplicationDaemonTaskStartupHook( void )
+ {
+     BaseType_t xReturned;
+-    xReturned = xTaskCreate( prvDaemonTask,               /* The function that implements the task. */
+-                             "DemoTask",                           /* Human readable name for the task. */
+-                             configMINIMAL_STACK_SIZE * 4, /* Size of the stack to allocate for the task, in words not bytes! */
+-                             NULL,                                /* The task parameter is not used. */
+-                             tskIDLE_PRIORITY+5,                    /* Runs at the lowest priority. */
+-                             NULL );                 /* The handle is stored so the created task can be deleted again at the end of the demo. */
+-    configASSERT(xReturned == pdPASS);
++
++#ifdef CONFIG_USER_PROVISION_DEMO_ENABLED
++    if( SYSTEM_Init() == pdPASS )
++    {
++        int xCredResult = xCheckCredInFlash();
++
++        if ( xCredResult == 0 ) {
++            configPRINTF(("%s():credential exist\r\n", __func__));
++            xReturned = xTaskCreate( prvDaemonTask,               /* The function that implements the task. */
++                                 "DemoTask",                           /* Human readable name for the task. */
++                                 configMINIMAL_STACK_SIZE * 4, /* Size of the stack to allocate for the task, in words not bytes! */
++                                 NULL,                                /* The task parameter is not used. */
++                                 tskIDLE_PRIORITY+5,                    /* Runs at the lowest priority. */
++                                 NULL );                 /* The handle is stored so the created task can be deleted again at the end of the demo. */
++        } else {
++            configPRINTF(("%s():credential not exist\r\n", __func__));
++            /* provision fake client credential for TLS operation because of AFR design. */
++            vDevModeKeyProvisioning();
++            
++            /* Create the task to start AP mode. */
++            xReturned = xTaskCreate( vConfigureAgentTask,
++                     "CertProvision_task",
++                     configMINIMAL_STACK_SIZE * 10,
++                     NULL,
++                     tskIDLE_PRIORITY+5,
++                     NULL );
++        }
++        configASSERT(xReturned == pdPASS);
++    }
++#else
++        vDevModeKeyProvisioning();
++        xReturned = xTaskCreate( prvDaemonTask,               /* The function that implements the task. */
++                                 "DemoTask",                           /* Human readable name for the task. */
++                                 configMINIMAL_STACK_SIZE * 4, /* Size of the stack to allocate for the task, in words not bytes! */
++                                 NULL,                                /* The task parameter is not used. */
++                                 tskIDLE_PRIORITY+5,                    /* Runs at the lowest priority. */
++                                 NULL );                 /* The handle is stored so the created task can be deleted again at the end of the demo. */
++        configASSERT(xReturned == pdPASS);
++
++#endif
+ }
+ /*-----------------------------------------------------------*/
+ 
+@@ -286,7 +320,22 @@ void prvWifiConnect( void )
+         {
+         }
+     }
+-
++#ifdef CONFIG_USER_PROVISION_DEMO_ENABLED
++    WiFiInfo_t wifiInfo;
++    memset(&wifiInfo, 0, sizeof(WiFiInfo_t));
++    vReadWifiInFo(&wifiInfo);
++    configPRINTF( ( "wifiInfo.wifi_ssid: %s\r\n",wifiInfo.wifi_ssid ) );
++    configPRINTF( ( "wifiInfo.wifi_password: %s\r\n",wifiInfo.wifi_password ) );
++    configPRINTF( ( "wifiInfo.wifi_ssid len: %d\r\n", strlen(wifiInfo.wifi_ssid ) ));
++    configPRINTF( ( "wifiInfo.wifi_password len : %d\r\n", strlen(wifiInfo.wifi_password ) ));
++    /* Setup parameters. */
++    xNetworkParams.pcSSID = wifiInfo.wifi_ssid;
++    xNetworkParams.ucSSIDLength = strlen( wifiInfo.wifi_ssid );
++    xNetworkParams.pcPassword = wifiInfo.wifi_password;
++    xNetworkParams.ucPasswordLength = strlen( wifiInfo.wifi_password );
++    xNetworkParams.xSecurity = clientcredentialWIFI_SECURITY;
++    xNetworkParams.cChannel = 0;
++#else
+     /* Setup parameters. */
+     xNetworkParams.pcSSID = clientcredentialWIFI_SSID;
+     xNetworkParams.ucSSIDLength = strlen( clientcredentialWIFI_SSID );
+@@ -294,6 +343,7 @@ void prvWifiConnect( void )
+     xNetworkParams.ucPasswordLength = strlen( clientcredentialWIFI_PASSWORD );
+     xNetworkParams.xSecurity = clientcredentialWIFI_SECURITY;
+     xNetworkParams.cChannel = 0;
++#endif
+ 
+     xWifiStatus = WIFI_ConnectAP( &( xNetworkParams ) );
+ 
+diff --git a/demos/realtek/amebaz2/iar/application_is.ewp b/demos/realtek/amebaz2/iar/application_is.ewp
+index fac9bde..778fd8a 100644
+--- a/demos/realtek/amebaz2/iar/application_is.ewp
++++ b/demos/realtek/amebaz2/iar/application_is.ewp
+@@ -66,7 +66,7 @@
+                 </option>
+                 <option>
+                     <name>OGLastSavedByProductVersion</name>
+-                    <state>8.30.1.17146</state>
++                    <state>8.32.4.20866</state>
+                 </option>
+                 <option>
+                     <name>GeneralEnableMisra</name>
+@@ -116,7 +116,7 @@
+                 </option>
+                 <option>
+                     <name>GBECoreSlave</name>
+-                    <version>26</version>
++                    <version>27</version>
+                     <state>59</state>
+                 </option>
+                 <option>
+@@ -133,7 +133,7 @@
+                 </option>
+                 <option>
+                     <name>CoreVariant</name>
+-                    <version>26</version>
++                    <version>27</version>
+                     <state>59</state>
+                 </option>
+                 <option>
+@@ -156,7 +156,7 @@
+                 </option>
+                 <option>
+                     <name>GFPUCoreSlave2</name>
+-                    <version>26</version>
++                    <version>27</version>
+                     <state>59</state>
+                 </option>
+                 <option>
+@@ -215,7 +215,7 @@
+             <name>ICCARM</name>
+             <archiveVersion>2</archiveVersion>
+             <data>
+-                <version>34</version>
++                <version>35</version>
+                 <wantNonLocal>1</wantNonLocal>
+                 <debug>1</debug>
+                 <option>
+@@ -293,7 +293,7 @@
+                 <option>
+                     <name>CCAllowList</name>
+                     <version>1</version>
+-                    <state>11111010</state>
++                    <state>11111110</state>
+                 </option>
+                 <option>
+                     <name>CCDebugInfo</name>
+@@ -435,6 +435,7 @@
+                     <state>$PROJ_DIR$\..\..\..\..\lib\FreeRTOS-Plus-TCP\source\protocols\include</state>
+                     <state>$PROJ_DIR$\..\..\..\..\lib\third_party\unity\extras\fixture\src</state>
+                     <state>$PROJ_DIR$\..\..\..\..\lib\third_party\unity\src</state>
++                    <state>$PROJ_DIR$\..\..\..\common\cert_provision\include</state>
+                 </option>
+                 <option>
+                     <name>CCStdIncCheck</name>
+@@ -548,6 +549,10 @@
+                     <name>IccRTTI2</name>
+                     <state>0</state>
+                 </option>
++                <option>
++                    <name>OICompilerExtraOption</name>
++                    <state>1</state>
++                </option>
+             </data>
+         </settings>
+         <settings>
+@@ -771,7 +776,7 @@
+             <name>ILINK</name>
+             <archiveVersion>0</archiveVersion>
+             <data>
+-                <version>21</version>
++                <version>22</version>
+                 <wantNonLocal>1</wantNonLocal>
+                 <debug>1</debug>
+                 <option>
+@@ -1127,6 +1132,10 @@
+                     <name>IlinkTrustzoneImportLibraryOut</name>
+                     <state>application_is_import_lib.o</state>
+                 </option>
++                <option>
++                    <name>OILinkExtraOption</name>
++                    <state>1</state>
++                </option>
+             </data>
+         </settings>
+         <settings>
+@@ -1168,7 +1177,7 @@
+             <settings>
+                 <name>ICCARM</name>
+                 <data>
+-                    <version>34</version>
++                    <version>35</version>
+                     <wantNonLocal>0</wantNonLocal>
+                     <debug>1</debug>
+                     <option>
+@@ -1506,7 +1515,7 @@
+             <settings>
+                 <name>ICCARM</name>
+                 <data>
+-                    <version>34</version>
++                    <version>35</version>
+                     <wantNonLocal>1</wantNonLocal>
+                     <debug>1</debug>
+                     <option>
+@@ -1809,6 +1818,10 @@
+                         <name>IccRTTI2</name>
+                         <state>0</state>
+                     </option>
++                    <option>
++                        <name>OICompilerExtraOption</name>
++                        <state>1</state>
++                    </option>
+                 </data>
+             </settings>
+         </configuration>
+@@ -2566,6 +2579,12 @@
+             <name>$PROJ_DIR$\src\main.c</name>
+         </file>
+     </group>
++    <group>
++        <name>cert_provision</name>
++        <file>
++            <name>$PROJ_DIR$\..\..\..\common\cert_provision\src\cert_provision.c</name>
++        </file>
++    </group>
+     <group>
+         <name>utilities</name>
+         <group>
+diff --git a/demos/realtek/amebaz2/iar/inc/FreeRTOSConfig.h b/demos/realtek/amebaz2/iar/inc/FreeRTOSConfig.h
+index cd870b6..9441baf 100644
+--- a/demos/realtek/amebaz2/iar/inc/FreeRTOSConfig.h
++++ b/demos/realtek/amebaz2/iar/inc/FreeRTOSConfig.h
+@@ -253,4 +253,7 @@ extern int  freertos_ready_to_sleep(void);
+ /* Add by Realtek to re-arrange the FreeRTOS priority*/
+ #define PRIORITIE_OFFSET				( 4 )
+ 
++/* Enable  Cert provision mechanism */
++#define CONFIG_USER_PROVISION_DEMO_ENABLED
++
+ #endif /* FREERTOS_CONFIG_H */
+diff --git a/lib/include/aws_mqtt_agent.h b/lib/include/aws_mqtt_agent.h
+index a53af68..7a16d69 100644
+--- a/lib/include/aws_mqtt_agent.h
++++ b/lib/include/aws_mqtt_agent.h
+@@ -134,19 +134,18 @@ typedef BaseType_t ( * MQTTAgentCallback_t ) ( void * pvUserData,
+  */
+ typedef struct MQTTAgentConnectParams
+ {
+-    const char * pcURL;                             /**< The URL of the MQTT broker to connect to. */
+-    BaseType_t xFlags;                              /**< Flags to control the behavior of MQTT connect. */
+-    BaseType_t xURLIsIPAddress;                     /**< Deprecated. Set the mqttagentURL_IS_IP_ADDRESS bit in xFlags instead. */
+-    uint16_t usPort;                                /**< Port number at which MQTT broker is listening. This field is ignored if the mqttagentUSE_AWS_IOT_ALPN_443 flag is set. */
+-    const uint8_t * pucClientId;                    /**< Client Identifier of the MQTT client. It should be unique per broker. */
+-    uint16_t usClientIdLength;                      /**< The length of the client Id. */
+-    BaseType_t xSecuredConnection;                  /**< Deprecated. Set the mqttagentREQUIRE_TLS bit in xFlags instead. */
+-    void * pvUserData;                              /**< User data supplied back as it is in the callback. Can be NULL. */
+-    MQTTAgentCallback_t pxCallback;                 /**< Callback used to report various events. In addition to other events, this callback is invoked for the publish
+-                                                     *   messages received on the topics for which the user has not registered any subscription callback. Can be NULL. */
+-    char * pcCertificate;                           /**< Certificate used for secure connection. Can be NULL. If it is NULL, the one specified in the aws_credential_keys.h is used. */
+-    uint32_t ulCertificateSize;                     /**< Size of certificate used for secure connection. */
+-    const MQTTPublishParams_t * pWillInfo;          /**< A message to publish if the new MQTT connection is unexpectedly closed. */
++    const char * pcURL;             /**< The URL of the MQTT broker to connect to. */
++    BaseType_t xFlags;              /**< Flags to control the behavior of MQTT connect. */
++    BaseType_t xURLIsIPAddress;     /**< Deprecated. Set the mqttagentURL_IS_IP_ADDRESS bit in xFlags instead. */
++    uint16_t usPort;                /**< Port number at which MQTT broker is listening. This field is ignored if the mqttagentUSE_AWS_IOT_ALPN_443 flag is set. */
++    const uint8_t * pucClientId;    /**< Client Identifier of the MQTT client. It should be unique per broker. */
++    uint16_t usClientIdLength;      /**< The length of the client Id. */
++    BaseType_t xSecuredConnection;  /**< Deprecated. Set the mqttagentREQUIRE_TLS bit in xFlags instead. */
++    void * pvUserData;              /**< User data supplied back as it is in the callback. Can be NULL. */
++    MQTTAgentCallback_t pxCallback; /**< Callback used to report various events. In addition to other events, this callback is invoked for the publish
++                                     *   messages received on the topics for which the user has not registered any subscription callback. Can be NULL. */
++    char * pcCertificate;           /**< Certificate used for secure connection. Can be NULL. If it is NULL, the one specified in the aws_credential_keys.h is used. */
++    uint32_t ulCertificateSize;     /**< Size of certificate used for secure connection. */
+ } MQTTAgentConnectParams_t;
+ 
+ /**
+@@ -356,15 +355,5 @@ MQTTAgentReturnCode_t MQTT_AGENT_Publish( MQTTAgentHandle_t xMQTTHandle,
+  */
+ MQTTAgentReturnCode_t MQTT_AGENT_ReturnBuffer( MQTTAgentHandle_t xMQTTHandle,
+                                                MQTTBufferHandle_t xBufferHandle );
+-/**
+- * @brief used to shutdown the socket directly.
+- *
+- * This function is used to shutdown socket connection without closing it.
+- *
+- * @param[in] xMQTTHandle The opaque handle as returned from MQTT_AGENT_Create.
+- *
+- */
+-
+-void prvShutdownConnection( MQTTAgentHandle_t xMQTTHandle );
+ 
+ #endif /* _AWS_MQTT_AGENT_H_ */
+diff --git a/lib/include/aws_mqtt_lib.h b/lib/include/aws_mqtt_lib.h
+index 22fea98..6f904e6 100644
+--- a/lib/include/aws_mqtt_lib.h
++++ b/lib/include/aws_mqtt_lib.h
+@@ -509,23 +509,6 @@ typedef struct MQTTInitParams
+     MQTTBufferPoolInterface_t xBufferPoolInterface; /**< User supplied buffer pool interface. @see MQTTBufferPoolInterface_t. */
+ } MQTTInitParams_t;
+ 
+-/**
+- * @brief MQTT Publish Parameters.
+- *
+- * Parameters passed to the MQTT_Publish API.
+- */
+-typedef struct MQTTPublishParams
+-{
+-    const uint8_t * pucTopic;    /**< The topic to which the data should be published. */
+-    uint16_t usTopicLength;      /**< The length of the topic. */
+-    MQTTQoS_t xQos;              /**< Quality of Service. */
+-    const void * pvData;         /**< The data to publish. */
+-    uint32_t ulDataLength;       /**< Length of the data. */
+-    uint16_t usPacketIdentifier; /**< The same identifier is returned in the callback when corresponding PUBACK is received or the operation times out. */
+-    uint32_t ulTimeoutTicks;     /**< The time interval in ticks after which the operation should fail. */
+-} MQTTPublishParams_t;
+-
+-
+ /**
+  * @brief MQTT Connect Parameters.
+  *
+@@ -542,7 +525,6 @@ typedef struct MQTTConnectParams
+     uint16_t usUserNameLength;               /**< The length of the user name. */
+     uint16_t usPacketIdentifier;             /**< The same identifier is returned in the callback when corresponding CONNACK is received or the operation times out. */
+     uint32_t ulTimeoutTicks;                 /**< The time interval in ticks after which the operation should fail. */
+-    const MQTTPublishParams_t * pWillInfo;   /**< A message to publish if the new MQTT connection is unexpectedly closed. */
+ } MQTTConnectParams_t;
+ 
+ /**
+@@ -579,7 +561,21 @@ typedef struct MQTTUnsubscribeParams
+     uint32_t ulTimeoutTicks;     /**< The time interval in ticks after which the operation should fail. */
+ } MQTTUnsubscribeParams_t;
+ 
+-
++/**
++ * @brief MQTT Publish Parameters.
++ *
++ * Parameters passed to the MQTT_Publish API.
++ */
++typedef struct MQTTPublishParams
++{
++    const uint8_t * pucTopic;    /**< The topic to which the data should be published. */
++    uint16_t usTopicLength;      /**< The length of the topic. */
++    MQTTQoS_t xQos;              /**< Quality of Service. */
++    const void * pvData;         /**< The data to publish. */
++    uint32_t ulDataLength;       /**< Length of the data. */
++    uint16_t usPacketIdentifier; /**< The same identifier is returned in the callback when corresponding PUBACK is received or the operation times out. */
++    uint32_t ulTimeoutTicks;     /**< The time interval in ticks after which the operation should fail. */
++} MQTTPublishParams_t;
+ 
+ /**
+  * @brief Initializes the given MQTT Context.
+diff --git a/lib/mqtt/aws_mqtt_agent.c b/lib/mqtt/aws_mqtt_agent.c
+index 8a550e4..518f5b1 100644
+--- a/lib/mqtt/aws_mqtt_agent.c
++++ b/lib/mqtt/aws_mqtt_agent.c
+@@ -1402,7 +1402,6 @@ static void prvInitiateMQTTConnect( MQTTEventData_t * const pxEventData )
+             xConnectParams.ulPingRequestTimeoutTicks = mqttconfigKEEP_ALIVE_TIMEOUT_TICKS;
+             xConnectParams.usPacketIdentifier = ( uint16_t ) ( mqttMESSAGE_IDENTIFIER_EXTRACT( pxEventData->xNotificationData.ulMessageIdentifier ) );
+             xConnectParams.ulTimeoutTicks = pxEventData->xTicksToWait;
+-            xConnectParams.pWillInfo = pxEventData->u.pxConnectParams->pWillInfo;
+ 
+             if( MQTT_Connect( &( pxConnection->xMQTTContext ), &( xConnectParams ) ) != eMQTTSuccess )
+             {
+@@ -2068,18 +2067,3 @@ MQTTAgentReturnCode_t MQTT_AGENT_ReturnBuffer( MQTTAgentHandle_t xMQTTHandle,
+     return eMQTTAgentSuccess;
+ }
+ /*-----------------------------------------------------------*/
+-
+-void prvShutdownConnection( MQTTAgentHandle_t xMQTTHandle )
+-{
+-    UBaseType_t uxBrokerNumber = ( UBaseType_t ) mqttDECODE_BROKER_NUMBER( xMQTTHandle ); /*lint !e923 Opaque pointer. */
+-
+-    MQTTBrokerConnection_t * pxConnection = &( xMQTTConnections[ uxBrokerNumber ] );
+-
+-    mqttconfigDEBUG_LOG( ( "start to shutdown socket.\r\n" ) );
+-
+-    /* Shutdown the connection. */
+-    ( void ) SOCKETS_Shutdown( pxConnection->xSocket, SOCKETS_SHUT_RDWR );
+-
+-    pxConnection->xSocket = SOCKETS_INVALID_SOCKET;
+-}
+-/*-----------------------------------------------------------*/
+diff --git a/lib/mqtt/aws_mqtt_lib.c b/lib/mqtt/aws_mqtt_lib.c
+index 1836e32..39815ce 100644
+--- a/lib/mqtt/aws_mqtt_lib.c
++++ b/lib/mqtt/aws_mqtt_lib.c
+@@ -99,19 +99,6 @@
+ #define mqttCONNECT_USER_NAME_FLAG        ( ( uint8_t ) ( ( uint8_t ) 1 << ( uint8_t ) 7 ) )
+ /** @} */
+ 
+-/*
+- * @brief Positions of each flag in the "Connect Flag" field of an MQTT CONNECT
+- * packet.
+- */
+-#define MQTT_CONNECT_FLAG_CLEAN                     ( 1 )  /**< @brief Clean session. */
+-#define MQTT_CONNECT_FLAG_WILL                      ( 2 )  /**< @brief Will present. */
+-#define MQTT_CONNECT_FLAG_WILL_QOS1                 ( 3 )  /**< @brief Will QoS1. */
+-#define MQTT_CONNECT_FLAG_WILL_QOS2                 ( 4 )  /**< @brief Will QoS2. */
+-#define MQTT_CONNECT_FLAG_WILL_RETAIN               ( 5 )  /**< @brief Will retain. */
+-#define MQTT_CONNECT_FLAG_PASSWORD                  ( 6 )  /**< @brief Password present. */
+-#define MQTT_CONNECT_FLAG_USERNAME                  ( 7 )  /**< @brief Username present. */
+-
+-
+ /**
+  * @brief Protocol level value is 4 for version 3.1.1.
+  */
+@@ -2540,11 +2527,6 @@ MQTTReturnCode_t MQTT_Connect( MQTTContext_t * pxMQTTContext,
+                             ( uint32_t ) usClientIdLength +
+                             ( uint32_t ) usUserNameLength;
+ 
+-        if( pxConnectParams->pWillInfo ) {
+-            ulRemainingLength += mqttSTRLEN(pxConnectParams->pWillInfo->usTopicLength);
+-            ulRemainingLength += mqttSTRLEN(pxConnectParams->pWillInfo->ulDataLength);
+-        }
+-
+         /* Calculate the number of bytes occupied by the "Remaining Length" field. */
+         ucRemainingLengthFieldBytes = prvSizeOfRemainingLength( ulRemainingLength );
+ 
+@@ -2598,22 +2580,6 @@ MQTTReturnCode_t MQTT_Connect( MQTTContext_t * pxMQTTContext,
+                     mqttbufferGET_DATA( xBuffer )[ mqttADJUST_OFFSET( mqttCONNECT_FLAGS_OFFSET, ucRemainingLengthFieldBytes ) ] |= mqttCONNECT_USER_NAME_FLAG;
+                 }
+ 
+-                /* update LWT regarding flag */
+-                if( pxConnectParams->pWillInfo )
+-                {
+-                    mqttbufferGET_DATA( xBuffer )[ mqttADJUST_OFFSET( mqttCONNECT_FLAGS_OFFSET, ucRemainingLengthFieldBytes ) ] |= (1 << MQTT_CONNECT_FLAG_WILL);
+-
+-                    /* Flags only need to be changed for will QoS 1 and 2 */
+-                    switch(pxConnectParams->pWillInfo->xQos) {
+-                        case eMQTTQoS1:
+-                            mqttbufferGET_DATA( xBuffer )[ mqttADJUST_OFFSET( mqttCONNECT_FLAGS_OFFSET, ucRemainingLengthFieldBytes ) ] |= (1 << MQTT_CONNECT_FLAG_WILL_QOS1);
+-                            break;
+-                        case eMQTTQoS2:
+-                            mqttbufferGET_DATA( xBuffer )[ mqttADJUST_OFFSET( mqttCONNECT_FLAGS_OFFSET, ucRemainingLengthFieldBytes ) ] |= (1 << MQTT_CONNECT_FLAG_WILL_QOS2);
+-                            break;
+-                    }
+-                }
+-
+                 /* Update keep alive timeout. */
+                 mqttbufferGET_DATA( xBuffer )[ mqttADJUST_OFFSET( mqttCONNECT_KEEPALIVE_MSB_OFFSET,
+                                                                   ucRemainingLengthFieldBytes ) ] = ( uint8_t ) ( pxConnectParams->usKeepAliveIntervalSeconds >> mqttBITS_PER_BYTE );
+@@ -2624,13 +2590,6 @@ MQTTReturnCode_t MQTT_Connect( MQTTContext_t * pxMQTTContext,
+                 pucNextByte = &( mqttbufferGET_DATA( xBuffer )[ mqttADJUST_OFFSET( mqttCONNECT_CLIENT_ID_OFFSET, ucRemainingLengthFieldBytes ) ] );
+                 pucNextByte = prvWriteString( pucNextByte, pucLastByteInBuffer, pxConnectParams->pucClientId, pxConnectParams->usClientIdLength );
+ 
+-                /* Write the will topic name and message into the CONNECT packet if provided. */
+-                if( pxConnectParams->pWillInfo )
+-                {
+-                    pucNextByte = prvWriteString( pucNextByte, pucLastByteInBuffer, pxConnectParams->pWillInfo->pucTopic , pxConnectParams->pWillInfo->usTopicLength );
+-                    pucNextByte = prvWriteString( pucNextByte, pucLastByteInBuffer, pxConnectParams->pWillInfo->pvData , pxConnectParams->pWillInfo->ulDataLength );
+-                }
+-
+                 /* Write the user name into the payload. */
+                 if( pxConnectParams->usUserNameLength > ( uint16_t ) 0 )
+                 {
+diff --git a/lib/third_party/mcu_vendor/realtek/component/common/network/dhcp/dhcps.c b/lib/third_party/mcu_vendor/realtek/component/common/network/dhcp/dhcps.c
+index ba318cd..531704d 100644
+--- a/lib/third_party/mcu_vendor/realtek/component/common/network/dhcp/dhcps.c
++++ b/lib/third_party/mcu_vendor/realtek/component/common/network/dhcp/dhcps.c
+@@ -42,6 +42,7 @@ static uint8_t client_addr[6];
+ static xSemaphoreHandle dhcps_ip_table_semaphore;
+ 
+ static struct netif * dhcps_netif = NULL;
++static struct ip_addr tmp_dhcps_allocated_client_address;
+ /**
+   * @brief  latch the specific ip in the ip table. 
+   * @param  d the specific index
+@@ -531,6 +532,8 @@ static void dhcps_send_offer(struct pbuf *packet_buffer)
+ 	IP4_ADDR(&dhcps_allocated_client_address, (ip4_addr1(&dhcps_network_id)),
+ 			ip4_addr2(&dhcps_network_id), ip4_addr3(&dhcps_network_id), temp_ip);
+ #endif
++    tmp_dhcps_allocated_client_address = dhcps_allocated_client_address;
++
+ #endif   
+ 	dhcps_initialize_message(dhcp_message_repository);
+ 	if(add_offer_options(add_msg_type(&dhcp_message_repository->options[4], DHCP_MESSAGE_TYPE_OFFER)) == 0){
+@@ -743,6 +746,7 @@ uint8_t dhcps_handle_state_machine_change(uint8_t option_message_type)
+ 				IP4_ADDR(&dhcps_allocated_client_address, (ip4_addr1(&dhcps_network_id)),
+ 						ip4_addr2(&dhcps_network_id), ip4_addr3(&dhcps_network_id), ip_addr4);
+ #endif
++                                tmp_dhcps_allocated_client_address = dhcps_allocated_client_address;
+ 				dhcp_server_state_machine = DHCP_SERVER_STATE_ACK;
+ 			}else{
+ 				dhcp_server_state_machine = DHCP_SERVER_STATE_NAK;
+@@ -766,6 +770,12 @@ uint8_t dhcps_handle_state_machine_change(uint8_t option_message_type)
+ 
+ 	return dhcp_server_state_machine;
+ }
++
++int32_t dhcp_get_latest_client_ip()
++{
++    return tmp_dhcps_allocated_client_address.addr;
++}
++
+ /**
+   * @brief  parse the dhcp message option part.
+   * @param  optptr: the addr of the first option field. 
+diff --git a/lib/third_party/mcu_vendor/realtek/component/common/network/dhcp/dhcps.h b/lib/third_party/mcu_vendor/realtek/component/common/network/dhcp/dhcps.h
+index 9d87445..8d74bce 100644
+--- a/lib/third_party/mcu_vendor/realtek/component/common/network/dhcp/dhcps.h
++++ b/lib/third_party/mcu_vendor/realtek/component/common/network/dhcp/dhcps.h
+@@ -156,6 +156,7 @@ PACK_STRUCT_END
+ void dhcps_set_addr_pool(int addr_pool_set, struct ip_addr * addr_pool_start, struct ip_addr *addr_pool_end);
+ void dhcps_init(struct netif * pnetif);
+ void dhcps_deinit(void);
++int32_t dhcp_get_latest_client_ip(void);
+ 
+ extern struct netif *netif_default;
+ 
+diff --git a/tests/common/mqtt/aws_test_mqtt_agent.c b/tests/common/mqtt/aws_test_mqtt_agent.c
+index 62f9d1d..352f720 100644
+--- a/tests/common/mqtt/aws_test_mqtt_agent.c
++++ b/tests/common/mqtt/aws_test_mqtt_agent.c
+@@ -121,34 +121,6 @@
+ #define mqttagenttestMULTI_TASK_TEST_TOPIC_NAME                ( ( const uint8_t * ) "freertos/tests/multiTask/%d" )
+ #define mqttagenttestMULTI_TASK_TEST_MAX_TOPIC_NAME_SIZE       ( 30 )
+ 
+-/* topic for last will */
+-#define IOT_TEST_MQTT_TOPIC_PREFIX               "iottest"
+-
+-/**
+- * @brief The Last Will and Testament topic name in this demo.
+- *
+- * The MQTT server will publish a message to this topic name if this client is
+- * unexpectedly disconnected.
+- */
+-#define WILL_TOPIC_NAME                          IOT_TEST_MQTT_TOPIC_PREFIX "/will"
+-
+-/**
+- * @brief The length of #WILL_TOPIC_NAME.
+- */
+-#define WILL_TOPIC_NAME_LENGTH                   ( ( uint16_t ) ( sizeof( WILL_TOPIC_NAME ) - 1 ) )
+-
+-/**
+- * @brief The message to publish to #WILL_TOPIC_NAME.
+- */
+-#define WILL_MESSAGE                             "MQTT demo unexpectedly disconnected."
+-
+-/**
+- * @brief The length of #WILL_MESSAGE.
+- */
+-#define WILL_MESSAGE_LENGTH                      ( ( size_t ) ( sizeof( WILL_MESSAGE ) - 1 ) )
+-
+-
+-
+ 
+ /* Default connection parameters. */
+ static const MQTTAgentConnectParams_t xDefaultConnectParameters =
+@@ -246,26 +218,9 @@ static MQTTBool_t prvMultiTaskTestMQTTCallback( void * pvUserData,
+ static MQTTBool_t prvMQTTCallback( void * pvUserData,
+                                    const MQTTPublishData_t * const pxPublishParameters )
+ {
+-
+     /* Give the semaphore to signal message receipt. */
+     xSemaphoreGive( ( SemaphoreHandle_t ) pvUserData );
+ 
+-    return eMQTTFalse;
+-}
+-
+-                                   /**
+- * @brief Callback for MQTT LWT subscription.
+- */
+-static MQTTBool_t prvMQTTLWTCallback( void * pvUserData,
+-                                   const MQTTPublishData_t * const pxPublishParameters )
+-{
+-    if (strlen(WILL_MESSAGE) == pxPublishParameters->ulDataLength &&
+-        strncmp(pxPublishParameters->pvData, WILL_MESSAGE, pxPublishParameters->ulDataLength) == 0) {
+-
+-        /* Give the semaphore to signal message receipt. */
+-        xSemaphoreGive( ( SemaphoreHandle_t ) pvUserData );
+-    }
+-
+     return eMQTTFalse;
+ }
+ 
+@@ -410,7 +365,6 @@ TEST_TEAR_DOWN( Full_MQTT_Agent_ALPN )
+  */
+ TEST_GROUP_RUNNER( Full_MQTT_Agent )
+ {
+-    RUN_TEST_CASE( Full_MQTT_Agent, LastWillAndTestament );
+     RUN_TEST_CASE( Full_MQTT_Agent, AFQP_MQTT_Agent_SubscribePublishDefaultPort );
+     RUN_TEST_CASE( Full_MQTT_Agent, AFQP_MQTT_Agent_InvalidCredentials );
+ }
+@@ -424,110 +378,6 @@ TEST_GROUP_RUNNER( Full_MQTT_Agent_ALPN )
+ }
+ /*-----------------------------------------------------------*/
+ 
+-TEST( Full_MQTT_Agent, LastWillAndTestament )
+-{
+-    MQTTAgentReturnCode_t xReturned = eMQTTAgentFailure;
+-    StaticSemaphore_t xSemaphore = { 0 };
+-    MQTTAgentHandle_t xMQTTHandle = NULL;
+-    MQTTAgentSubscribeParams_t xSubscribeParams;
+-    BaseType_t xMQTTAgentCreated = pdFALSE;
+-    MQTTAgentConnectParams_t xConnectParameters;
+-    MQTTPublishParams_t xWillInfoParameters;
+-    MQTTAgentHandle_t xTestMQTTHandle = NULL;
+-    MQTTAgentConnectParams_t xTestConnectParameters;
+-    MQTTAgentPublishParams_t xPublishParameters;
+-
+-    /*connect to IoT Core with LWT parameter. */
+-    memcpy( &xConnectParameters, &xDefaultConnectParameters, sizeof( MQTTAgentConnectParams_t ) );
+-    xConnectParameters.pWillInfo = &xWillInfoParameters;
+-    xConnectParameters.pucClientId = "LWTtest";
+-
+-    /*connect to IoT Core and used to detect LWT. */
+-    memcpy( &xTestConnectParameters, &xDefaultConnectParameters, sizeof( MQTTAgentConnectParams_t ) );    
+-
+-    /* Setup the MQTT LWT publish parameters. */
+-    memset( &( xWillInfoParameters ), 0x00, sizeof( xWillInfoParameters ) );
+-    xWillInfoParameters.pucTopic = WILL_TOPIC_NAME;
+-    xWillInfoParameters.pvData = WILL_MESSAGE;
+-    xWillInfoParameters.usTopicLength = WILL_TOPIC_NAME_LENGTH;
+-    xWillInfoParameters.ulDataLength = WILL_MESSAGE_LENGTH;
+-    xWillInfoParameters.xQos = eMQTTQoS0;
+-
+-    /* Initialize the semaphore as unavailable. */
+-    TEST_ASSERT_NOT_NULL( xSemaphoreCreateCountingStatic( 1, 0, &xSemaphore ) );
+-
+-    /* Fill in the MQTTAgentConnectParams_t member that is not const. */
+-    xConnectParameters.usClientIdLength = ( uint16_t ) strlen(
+-        ( char * ) xConnectParameters.pucClientId );
+-
+-    xTestConnectParameters.usClientIdLength = ( uint16_t ) strlen(
+-        ( char * ) xTestConnectParameters.pucClientId );
+-
+-
+-    if( TEST_PROTECT() )
+-    {
+-        /* The MQTT client object must be created before it can be used. */
+-        xReturned = MQTT_AGENT_Create( &xTestMQTTHandle );
+-        TEST_ASSERT_EQUAL_INT( xReturned, eMQTTAgentSuccess );
+-
+-        /* Connect to the broker. */
+-        xReturned = MQTT_AGENT_Connect( xTestMQTTHandle,
+-                                        &xTestConnectParameters,
+-                                        mqttagenttestTIMEOUT );
+-
+-        /* Setup subscribe parameters to subscribe to echo topic. */
+-        xSubscribeParams.pucTopic = WILL_TOPIC_NAME;
+-        xSubscribeParams.pvPublishCallbackContext = &xSemaphore;
+-        xSubscribeParams.pxPublishCallback = prvMQTTLWTCallback;
+-        xSubscribeParams.usTopicLength = ( uint16_t ) strlen( ( const char * ) WILL_TOPIC_NAME );
+-        xSubscribeParams.xQoS = eMQTTQoS1;
+-
+-        /* Subscribe to the topic. */
+-        xReturned = MQTT_AGENT_Subscribe( xTestMQTTHandle,
+-                                          &xSubscribeParams,
+-                                          mqttagenttestTIMEOUT );
+-    
+-        /* The MQTT client object must be created before it can be used. */
+-        xReturned = MQTT_AGENT_Create( &xMQTTHandle );
+-        TEST_ASSERT_EQUAL_INT( xReturned, eMQTTAgentSuccess );
+-        xMQTTAgentCreated = pdTRUE;
+-
+-        /* Connect to the broker. */
+-        xReturned = MQTT_AGENT_Connect( xMQTTHandle,
+-                                        &xConnectParameters,
+-                                        mqttagenttestTIMEOUT );
+-        TEST_ASSERT_EQUAL_INT_MESSAGE( xReturned, eMQTTAgentSuccess, "Failed to connect to the MQTT broker with MQTT_AGENT_Connect()." );
+-
+-
+-        //xReturned = MQTT_AGENT_Disconnect( xMQTTHandle, mqttagenttestTIMEOUT );
+-        prvShutdownConnection( xMQTTHandle );
+-
+-        /* Take the semaphore to ensure the message is Received. */
+-        if( pdFALSE == xSemaphoreTake( ( QueueHandle_t ) &( xSemaphore ), mqttagenttestTIMEOUT ) )
+-        {
+-            TEST_FAIL();
+-        }
+-        
+-
+-        /* Disconnect the client. */
+-        xReturned = MQTT_AGENT_Disconnect( xTestMQTTHandle, mqttagenttestTIMEOUT );
+-        TEST_ASSERT_EQUAL_INT( xReturned, eMQTTAgentSuccess );
+-    }
+-    else
+-    {
+-        TEST_FAIL();
+-    }
+-
+-
+-    if( xMQTTAgentCreated == pdTRUE )
+-    {
+-        /* Delete the MQTT client. */
+-        xReturned = MQTT_AGENT_Delete( xTestMQTTHandle );
+-        TEST_ASSERT_EQUAL_INT( xReturned, eMQTTAgentSuccess );
+-    }
+-
+-}
+-
+ /* Test for ping-ponging a message using the default AWS IoT port for MQTT. */
+ TEST( Full_MQTT_Agent, AFQP_MQTT_Agent_SubscribePublishDefaultPort )
+ {
+-- 
+2.19.1
+
