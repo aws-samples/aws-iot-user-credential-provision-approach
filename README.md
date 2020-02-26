@@ -15,9 +15,9 @@ This packages will showcase a user provision approach solution using Cognito You
       ```
 
       then build a android application by android studio to let user log in AWS Cognito Service to get legal token to access other AWS Service and do the following action:
-            - Get device certificate thru AWS API Gateway functionality with the legal token.
-            - Setup WiFi credential which you want your device to connect to.
-            - Start TLS commnunication to provision user credential and Wi-Fi credential to the devcie.
+      - Get device certificate thru AWS API Gateway functionality with the legal token.
+      - Setup WiFi credential which you want your device to connect to.
+      - Start TLS commnunication to provision user credential and Wi-Fi credential to the devcie.
 
 2. Package amazon-freertos Package android_app including a patch from Realtek Ameba Z2 repository (https://github.com/ambiot/amazon-freertos.git) used to be applied on Realtek Ameba Z2 platform, and it will start its SoftAP mode if there's no legal certificate inside it.
 How to apply the patch:
