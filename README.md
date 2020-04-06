@@ -1,10 +1,9 @@
-=======
 **Introduction**
 ============
 This packages will showcase a user provision approach solution using Cognito Your User Pools with the AWS Mobile SDK for Android, Amazon FreeRTOS platform, and AWS Lambda function.
 
 **How to Use**
-======================================
+============
 
 1. Package android_app including a patch from aws-sdk-android-samples (https://github.com/awslabs/aws-sdk-android-samples.git) used to patch the AmazonCognitoYourUserPoolsDemo:
 
@@ -31,15 +30,6 @@ How to apply the patch:
       ```
 
 3. Package lambda used to let AWS API Gateway to access it, it will create thing, policy, and certificate and return the certificate result to caller.
-=======
-## My Project
-
-TODO: Fill this README out!
-
-Be sure to:
-
-* Change the title in this README
-* Edit your repository description on GitHub
 
 ## License
 
