@@ -30,3 +30,17 @@ How to apply the patch:
       ```
 
 3. Package lambda used to let AWS API Gateway to access it, it will create thing, policy, and certificate and return the certificate result to caller.
+=======
+## My Project
+
+TODO: Fill this README out!
+
+Be sure to:
+
+* Change the title in this README
+* Edit your repository description on GitHub
+
+## License
+
+This solution is licensed under the MIT-0 License. See the LICENSE file.
+
