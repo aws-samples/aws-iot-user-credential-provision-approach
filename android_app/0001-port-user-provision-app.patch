@@ -1,0 +1,1488 @@
+From e1440b926cde458418ecdb59e119b27a957972f1 Mon Sep 17 00:00:00 2001
+From: Andy Sun <smn@amazon.com>
+Date: Tue, 25 Feb 2020 14:24:55 +0800
+Subject: [PATCH] port user provision app
+
+---
+ .../app/build.gradle                          |   5 +
+ .../app/src/main/AndroidManifest.xml          |   7 +-
+ .../app/src/main/assets/key.bks               | Bin 0 -> 1085 bytes
+ .../app/src/main/assets/store.bks             | Bin 0 -> 2353 bytes
+ .../amazonaws/youruserpools/AppHelper.java    |  60 ++++++
+ .../youruserpools/CertProvisionActivity.java  | 103 ++++++++++
+ .../youruserpools/IoTProvisionAPIClient.java  |  60 ++++++
+ .../amazonaws/youruserpools/MainActivity.java |  25 +++
+ .../com/amazonaws/youruserpools/Step1.java    | 163 +++++++++++++++
+ .../com/amazonaws/youruserpools/Step2.java    |  80 ++++++++
+ .../com/amazonaws/youruserpools/Step3.java    | 187 ++++++++++++++++++
+ .../amazonaws/youruserpools/UserActivity.java |   5 +
+ .../amazonaws/youruserpools/model/Cert.java   |  41 ++++
+ .../youruserpools/model/CertReply.java        |  61 ++++++
+ .../amazonaws/youruserpools/model/Empty.java  |  21 ++
+ .../res/layout/activity_cert_provision.xml    |  48 +++++
+ .../src/main/res/layout/fragment_step1.xml    |  91 +++++++++
+ .../src/main/res/layout/fragment_step2.xml    |  65 ++++++
+ .../src/main/res/layout/fragment_step3.xml    |  29 +++
+ .../main/res/menu/activity_user_drawer.xml    |   2 +-
+ .../app/src/main/res/raw/key.bks              | Bin 0 -> 1094 bytes
+ .../app/src/main/res/raw/store.bks            | Bin 0 -> 2353 bytes
+ .../app/src/main/res/values/strings.xml       |   3 +
+ AmazonCognitoYourUserPoolsDemo/build.gradle   |   2 +-
+ 24 files changed, 1055 insertions(+), 3 deletions(-)
+ create mode 100644 AmazonCognitoYourUserPoolsDemo/app/src/main/assets/key.bks
+ create mode 100644 AmazonCognitoYourUserPoolsDemo/app/src/main/assets/store.bks
+ create mode 100644 AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/CertProvisionActivity.java
+ create mode 100755 AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/IoTProvisionAPIClient.java
+ create mode 100644 AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/Step1.java
+ create mode 100644 AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/Step2.java
+ create mode 100644 AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/Step3.java
+ create mode 100755 AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/model/Cert.java
+ create mode 100755 AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/model/CertReply.java
+ create mode 100755 AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/model/Empty.java
+ create mode 100644 AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/activity_cert_provision.xml
+ create mode 100644 AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/fragment_step1.xml
+ create mode 100644 AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/fragment_step2.xml
+ create mode 100644 AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/fragment_step3.xml
+ create mode 100644 AmazonCognitoYourUserPoolsDemo/app/src/main/res/raw/key.bks
+ create mode 100644 AmazonCognitoYourUserPoolsDemo/app/src/main/res/raw/store.bks
+
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/build.gradle b/AmazonCognitoYourUserPoolsDemo/app/build.gradle
+index ef9dd88..8921523 100644
+--- a/AmazonCognitoYourUserPoolsDemo/app/build.gradle
++++ b/AmazonCognitoYourUserPoolsDemo/app/build.gradle
+@@ -26,6 +26,11 @@ dependencies {
+     implementation 'com.android.support:design:23.1.1'
+     implementation 'com.android.support:cardview-v7:23.4.0'
+     implementation 'com.android.support:recyclerview-v7:23.4.0'
++    implementation 'com.android.support:design:25.2.0'
+     implementation 'com.android.support.constraint:constraint-layout:1.+'
++    implementation 'com.amazonaws:aws-android-sdk-cognitoidentityprovider:2.13.+'
++    implementation 'com.amazonaws:aws-android-sdk-core:2.4.+'
++    implementation "com.amazonaws:aws-android-sdk-apigateway-core:2.4+"
+     implementation 'com.amazonaws:aws-android-sdk-cognitoidentityprovider:2.16.+'
++    implementation 'com.google.code.gson:gson:2.8.0'
+ }
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/AndroidManifest.xml b/AmazonCognitoYourUserPoolsDemo/app/src/main/AndroidManifest.xml
+index 4e5ca30..bf77e2c 100644
+--- a/AmazonCognitoYourUserPoolsDemo/app/src/main/AndroidManifest.xml
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/AndroidManifest.xml
+@@ -4,6 +4,7 @@
+ 
+     <uses-permission android:name="android.permission.INTERNET" />
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
++    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+ 
+     <application
+         android:allowBackup="true"
+@@ -11,6 +12,10 @@
+         android:label="@string/app_name"
+         android:supportsRtl="true"
+         android:theme="@style/AppTheme">
++        <activity
++            android:name="com.amazonaws.youruserpools.CertProvisionActivity"
++            android:label="@string/title_activity_cert_provision"
++            android:theme="@style/AppTheme.NoActionBar"></activity>
+         <activity
+             android:name="com.amazonaws.youruserpools.MainActivity"
+             android:theme="@style/AppTheme.NoActionBar">
+@@ -73,4 +78,4 @@
+             android:theme="@style/AppTheme.NoActionBar" />
+     </application>
+ 
+-</manifest>
+\ No newline at end of file
++</manifest>
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/assets/key.bks b/AmazonCognitoYourUserPoolsDemo/app/src/main/assets/key.bks
+new file mode 100644
+index 0000000000000000000000000000000000000000..7d23855583539e265315c3182e04f06ff93c2f9a
+GIT binary patch
+literal 1085
+zcmZQzU|?imU=Xpk3A?uFP5AdM4KD?A#cD$8?N7dAU|`w9$iSLgnVnh*RF-pxHzNV4
+zmVtpaLeJE|l7WHwr9l((Q-da^vkRD+7@3$j84kp}-}G?Hp`Ql4Y@Awc9&O)w85y}*
+z84Mab47m+B*_cCF*o2uvgJB#F9;R?dLp}o@kPJHyYd}t7a;l+-fe?t##lsz$Us~jx
+zpIeZaR|(U?&BNpwVkl-H0#d@v!&_cnu2%_ER;-ttpKGXSAP={glTl0vB;%T!n3>}M
+zVu6$x$cghBS{hgwSpcz_iFuSbuaN<eX%6KMCZ{$rDj^3XBP#=Q6C*!^K@%evQxhX2
+z!-2(#{8xPx?AG5&m@Mb6d#pnI?5)F*1%fpu>%R3ZYYo<z@`a11<@W_O3tdI60-erX
+zLMIu#D>9^{ciz<JcGg-{fBZ~+edL$wnT!9m#@lPBbJo9Hd#@{>bMFO(&s~dq`Rr2o
+zT@S`bR&^donl1A9SviZhjfKgB6i>&Bm1a`HlYa26njAGVlh^)>!R*u44)yBCRbHRw
+zX`g4G<~~;~>Fe9(rj|C3%C2xrf0=5fKj%vrS9_V=O5OCb&u!Ok?XFckZ!TO_YEjpg
+z*?DZg%meu&vBhFD7CkL<W_-r)z5HDHo3oYQgXdrQKlj9;gMWI>r48T4d^L{`VBg8?
+zUOeBH!P(b>or#%|fpKwwfuDgaFg3{Xv52vVl<ZRym>i$uG9yzVL`>*VNI`UBIWSQG
+zrIlGE48$6+D*z=xSz#7d17=3X|HxquOuWD_XJnAK{2rxIVir<AvFK`f%(}m8d#ab*
+zOnbPh=Hl~nv$Ccp?L6(aU2XY=gX)Fx;d3opzJ2YV`T5kUo%^nE>-hOx*ytu)H%VdX
+zBK?0ar}F(yyZ+Djo%S?cwku7RxsPobQ&n$rY%te6u3-JYEX1j=nYHNiSI4gZ8m?;d
+zc6ck)U6}B&ehI@v(U$Eo$C{$vU3gZwZC`h6==9eoSH05;ubXVM=k(`m7n2qXN!vK}
+z>c_6SdP<08-PQL~CVyrxyR%ny!uswHx<*%SwQd#(+2C57IK4)(E1TKO>Ce=Y1=>@$
+ze(_uXDnLywJ$}81cGuS}j%&OEF23$QFzLJKo#O2J=IQs}-+JM7K7hfCA$7&}uAq#f
+Q+1YtV{=U4wyqLEc0L>+d#Q*>R
+
+literal 0
+HcmV?d00001
+
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/assets/store.bks b/AmazonCognitoYourUserPoolsDemo/app/src/main/assets/store.bks
+new file mode 100644
+index 0000000000000000000000000000000000000000..cf1da5517923a9930479458f132c38445a3f74be
+GIT binary patch
+literal 2353
+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
+N9mfJlH=uIZ{tePn_(uQ$
+
+literal 0
+HcmV?d00001
+
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/AppHelper.java b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/AppHelper.java
+index 56c4837..27433bb 100644
+--- a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/AppHelper.java
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/AppHelper.java
+@@ -21,14 +21,19 @@ import android.content.Context;
+ import android.graphics.Color;
+ import android.util.Log;
+ 
++import com.amazonaws.ClientConfiguration;
++import com.amazonaws.auth.AnonymousAWSCredentials;
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoDevice;
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserAttributes;
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserDetails;
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserPool;
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserSession;
+ import com.amazonaws.regions.Regions;
++import com.amazonaws.services.cognitoidentityprovider.AmazonCognitoIdentityProvider;
++import com.amazonaws.services.cognitoidentityprovider.AmazonCognitoIdentityProviderClient;
+ import com.amazonaws.services.cognitoidentityprovider.model.AttributeType;
+ 
++import java.io.InputStream;
+ import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.HashSet;
+@@ -100,6 +105,13 @@ public class AppHelper {
+      */
+     private static final Regions cognitoRegion = Regions.DEFAULT_REGION;
+ 
++    private static String cert = "NONE";
++    private static String privateKey = "NONE";
++    private static String idtoken = "";
++    private static String wifiSSID = "";
++    private static String wifiPassword = "";
++    private static InputStream keyStream;
++
+     // User details from the service
+     private static CognitoUserSession currSession;
+     private static CognitoUserDetails userDetails;
+@@ -552,5 +564,53 @@ public class AppHelper {
+     private static void deleteAttribute(String attributeName) {
+ 
+     }
++
++    public static String getPrivateKey() {
++        return privateKey;
++    }
++
++    public static void setPrivateKey(String key) {
++        privateKey = key;
++    }
++
++    public static String getIdToken() {
++        return idtoken;
++    }
++
++    public static void setIdToken(String token) {
++        idtoken = token;
++    }
++
++    public static String getWifiSSID() {
++        return wifiSSID;
++    }
++
++    public static void setWifiSSID(String ssid) {
++        wifiSSID = ssid;
++    }
++
++    public static String getWifiPassword() {
++        return wifiPassword;
++    }
++
++    public static void setWifiPassword(String password) {
++        wifiPassword = password;
++    }
++
++    public static InputStream getKeyStream() {
++        return keyStream;
++    }
++
++    public static void setKeyStream(InputStream keyInput) {
++        keyStream = keyInput;
++    }
++
++    public static String getCert() {
++        return cert;
++    }
++
++    public static void setCert(String certInput) {
++        cert = certInput;
++    }
+ }
+ 
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/CertProvisionActivity.java b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/CertProvisionActivity.java
+new file mode 100644
+index 0000000..5688082
+--- /dev/null
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/CertProvisionActivity.java
+@@ -0,0 +1,103 @@
++package com.amazonaws.youruserpools;
++
++import android.os.Bundle;
++import android.support.design.widget.TabLayout;
++import android.support.v4.app.Fragment;
++import android.support.v4.app.FragmentManager;
++import android.support.v4.app.FragmentPagerAdapter;
++import android.support.v4.view.ViewPager;
++import android.support.v7.app.AppCompatActivity;
++import android.view.ViewGroup;
++import com.amazonaws.youruserpools.CognitoYourUserPoolsDemo.R;
++
++import java.util.ArrayList;
++
++
++/**
++ * This activity used to do:
++ * 1. Use AWS Cognito Service to get user ID Token.
++ * 2. Get User credential by the user ID Token.
++ * 3. Start a TLS server to let iot device connect to it.
++ * 4. Provision User/WiFi credential to IoT device.
++ */
++public class CertProvisionActivity extends AppCompatActivity {
++
++    private ViewPager viewPager;
++
++    private TabLayout tabLayout;
++
++    private ArrayList<Integer> pages;
++
++    private static final int pageNumber = 3;
++
++    private void initData() {
++
++        pages = new ArrayList<>();
++
++        for (int i = 0; i < pageNumber; i++) {
++            pages.add(i);
++        }
++
++    }
++
++    private void initViews() {
++
++        viewPager = (ViewPager) findViewById(R.id.viewpager);
++
++        tabLayout = (TabLayout) findViewById(R.id.tablayout);
++
++        PageAdapter pageAdapter = new PageAdapter(getSupportFragmentManager(), pages.size());
++
++        viewPager.setAdapter(pageAdapter);
++
++        viewPager.addOnPageChangeListener(new TabLayout.TabLayoutOnPageChangeListener(tabLayout));
++
++        tabLayout.setupWithViewPager(viewPager);
++
++    }
++
++    @Override
++    protected void onCreate(Bundle savedInstanceState) {
++        super.onCreate(savedInstanceState);
++        setContentView(R.layout.activity_cert_provision);
++
++        initData();
++
++        initViews();
++    }
++
++    private class PageAdapter extends FragmentPagerAdapter {
++
++        private int numOfTabs;
++
++        PageAdapter(FragmentManager fm, int numOfTabs) {
++            super(fm);
++            this.numOfTabs = numOfTabs;
++        }
++
++        @Override
++        public int getCount() {
++            return numOfTabs;
++        }
++
++        @Override
++        public Fragment getItem(int position) {
++            switch (position) {
++                case 0:
++                    return new Step1();
++                case 1:
++                    return new Step2();
++                case 2:
++                    return new Step3();
++                default:
++                    return null;
++            }
++        }
++
++        @Override
++        public CharSequence getPageTitle(int position) {
++            return "Step " + (position+1);
++        }
++    }
++}
++
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/IoTProvisionAPIClient.java b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/IoTProvisionAPIClient.java
+new file mode 100755
+index 0000000..71e607f
+--- /dev/null
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/IoTProvisionAPIClient.java
+@@ -0,0 +1,60 @@
++/*
++ * Copyright 2010-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License").
++ * You may not use this file except in compliance with the License.
++ * A copy of the License is located at
++ *
++ *  http://aws.amazon.com/apache2.0
++ *
++ * or in the "license" file accompanying this file. This file is distributed
++ * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
++ * express or implied. See the License for the specific language governing
++ * permissions and limitations under the License.
++ */
++
++package cert_reply_1;
++
++import java.util.*;
++
++import cert_reply_1.model.CertReply;
++
++
++@com.amazonaws.mobileconnectors.apigateway.annotation.Service(endpoint = "https://gqjtwdvfng.execute-api.ap-northeast-1.amazonaws.com/cert_test")
++public interface IoTProvisionAPIClient {
++
++
++    /**
++     * A generic invoker to invoke any API Gateway endpoint.
++     * @param request
++     * @return ApiResponse
++     */
++    com.amazonaws.mobileconnectors.apigateway.ApiResponse execute(com.amazonaws.mobileconnectors.apigateway.ApiRequest request);
++
++    /**
++     *
++     *
++     * @param sn
++     * @param authorization
++     * @return CertReply
++     */
++    @com.amazonaws.mobileconnectors.apigateway.annotation.Operation(path = "/cert", method = "GET")
++    CertReply certGet(
++            @com.amazonaws.mobileconnectors.apigateway.annotation.Parameter(name = "sn", location = "query")
++                    String sn,
++            @com.amazonaws.mobileconnectors.apigateway.annotation.Parameter(name = "Authorization", location = "header")
++                    String authorization);
++
++    /**
++     *
++     *
++     * @param sn
++     * @return CertReply
++     */
++    @com.amazonaws.mobileconnectors.apigateway.annotation.Operation(path = "/cert", method = "POST")
++    CertReply certPost(
++            @com.amazonaws.mobileconnectors.apigateway.annotation.Parameter(name = "sn", location = "query")
++                    String sn);
++
++}
++
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/MainActivity.java b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/MainActivity.java
+index c4417bf..96cee72 100644
+--- a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/MainActivity.java
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/MainActivity.java
+@@ -21,6 +21,8 @@ import android.app.ProgressDialog;
+ import android.content.DialogInterface;
+ import android.content.Intent;
+ import android.content.pm.ActivityInfo;
++import android.os.AsyncTask;
++import android.os.Handler;
+ import android.support.v4.widget.DrawerLayout;
+ import android.support.v7.app.ActionBarDrawerToggle;
+ import android.support.v7.app.AlertDialog;
+@@ -35,10 +37,13 @@ import android.view.MenuItem;
+ import android.view.View;
+ import android.widget.EditText;
+ import android.widget.TextView;
++import android.widget.Toast;
++
+ 
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoDevice;
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUser;
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserSession;
++import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserPool;
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.continuations.AuthenticationContinuation;
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.continuations.AuthenticationDetails;
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.continuations.ChallengeContinuation;
+@@ -49,11 +54,16 @@ import com.amazonaws.mobileconnectors.cognitoidentityprovider.continuations.Choo
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.handlers.AuthenticationHandler;
+ import com.amazonaws.mobileconnectors.cognitoidentityprovider.handlers.ForgotPasswordHandler;
+ import com.amazonaws.youruserpools.CognitoYourUserPoolsDemo.R;
++import com.amazonaws.mobileconnectors.apigateway.ApiClientFactory;
++import com.amazonaws.ClientConfiguration;
+ 
+ import java.util.List;
+ import java.util.Locale;
+ import java.util.Map;
+ 
++import cert_reply_1.IoTProvisionAPIClient;
++import cert_reply_1.model.CertReply;
++
+ public class MainActivity extends AppCompatActivity {
+     private final String TAG="MainActivity";
+ 
+@@ -530,6 +540,21 @@ public class MainActivity extends AppCompatActivity {
+         public void onSuccess(CognitoUserSession cognitoUserSession, CognitoDevice device) {
+             Log.d(TAG, " -- Auth Success");
+             AppHelper.setCurrSession(cognitoUserSession);
++
++            // Get id token from CognitoUserSession.
++            AppHelper.setIdToken(cognitoUserSession.getIdToken().getJWTToken());
++            Log.d(TAG, "========================idToken:"+AppHelper.getIdToken());
++
++            try {
++                AppHelper.setKeyStream(getApplicationContext().getAssets().open("store.bks"));
++            } catch (Exception e) {
++                Log.d(TAG, e.toString());
++                AppHelper.setKeyStream(null);
++                Toast toast = (Toast) Toast.makeText( getApplicationContext(),
++                        "there's no server ceritificate in this device for provisioning cert/key", Toast.LENGTH_LONG);
++                toast.show();
++            }
++
+             AppHelper.newDevice(device);
+             closeWaitDialog();
+             launchUser();
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/Step1.java b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/Step1.java
+new file mode 100644
+index 0000000..46292b6
+--- /dev/null
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/Step1.java
+@@ -0,0 +1,163 @@
++package com.amazonaws.youruserpools;
++
++
++import android.os.AsyncTask;
++import android.os.Bundle;
++import android.os.Handler;
++import android.support.v4.app.Fragment;
++import android.util.Log;
++import android.view.Gravity;
++import android.view.LayoutInflater;
++import android.view.View;
++import android.view.ViewGroup;
++import android.widget.Button;
++import android.widget.EditText;
++import android.widget.TextView;
++import android.widget.Toast;
++
++import com.amazonaws.ClientConfiguration;
++import com.amazonaws.mobileconnectors.apigateway.ApiClientFactory;
++import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserPool;
++import com.amazonaws.mobileconnectors.cognitoidentityprovider.CognitoUserSession;
++import com.amazonaws.youruserpools.CognitoYourUserPoolsDemo.R;
++
++import static android.support.constraint.Constraints.TAG;
++
++/**
++ * This is first tab page named STEP 1, used to
++ * get cert/private key by entering DSN.
++ */
++public class Step1 extends Fragment {
++
++    private Button btnGenkey;
++    private EditText editTextUID;
++    private TextView certContent;
++    private TextView keyContent;
++    private static int creSize = 10;
++
++    public Step1() {
++        // Required empty public constructor
++    }
++
++
++    @Override
++    public View onCreateView(LayoutInflater inflater, ViewGroup container,
++                             Bundle savedInstanceState) {
++        View view =  inflater.inflate(R.layout.fragment_step1, container, false);
++        btnGenkey = (Button) view.findViewById(R.id.button2);
++        editTextUID = (EditText) view.findViewById(R.id.device_uid_input);
++        certContent = (TextView) view.findViewById(R.id.textView15);
++        keyContent = (TextView) view.findViewById(R.id.textView16);
++
++        updateCertKeyView();
++
++        btnGenkey.setOnClickListener(btnGenkeyOnClick);
++
++        return view;
++    }
++
++    private Button.OnClickListener btnGenkeyOnClick = new Button.OnClickListener() {
++        public void onClick(View view) {
++            if( editTextUID.length() == 0 ) {
++                toastMsg("Please input UID");
++            } else if( editTextUID.length() < 8 ) {
++                toastMsg("Please input correct UID");
++            } else {
++
++                new AsyncTask<String, Void, Void>() {
++                    // Runs in UI before background thread is called
++                    @Override
++                    protected void onPreExecute() {
++                        super.onPreExecute();
++                        // Do something like display a progress bar
++                    }
++
++                    @Override
++                    protected Void doInBackground(String... params) {
++
++                        String idToken = params[0];
++                        Log.d(TAG, "========================idToken:" + idToken);
++                        Log.d(TAG, "========================UID:" + params[1]);
++                        ApiClientFactory factory = new ApiClientFactory();
++                        cert_reply_1.IoTProvisionAPIClient client = factory.build(cert_reply_1.IoTProvisionAPIClient.class);
++                        cert_reply_1.model.CertReply crtRly = client.certGet(params[1], idToken);
++                        Log.d(TAG, "cert=" + crtRly.getCertificatePem());
++                        Log.d(TAG, "private key=" + crtRly.getPrivateKey());
++                        Log.d(TAG, "cert len:" + crtRly.getCertificatePem().length());
++                        Log.d(TAG, "private key len" + crtRly.getPrivateKey().length());
++
++                        if (crtRly.getCertificatePem().length() > 0 &&
++                                crtRly.getPrivateKey().length() > 0) {
++
++                            AppHelper.setCert(formatCredentialText(crtRly.getCertificatePem()));
++                            AppHelper.setPrivateKey(formatCredentialText(crtRly.getPrivateKey()));
++                            Log.d(TAG, "========================AppHelper.cert:" + AppHelper.getCert());
++                            Log.d(TAG, "========================AppHelper.PrivateKey:" + AppHelper.getPrivateKey());
++                        }
++
++                        Handler handler = new Handler(getActivity().getMainLooper());
++                        handler.post(new Runnable() {
++                            public void run() {
++                                Toast toast;
++                                if (AppHelper.getCert().length() > 0 && AppHelper.getPrivateKey().length() > 0) {
++                                    toast = Toast.makeText(getActivity(), "Got Cert and Key successfully", Toast.LENGTH_LONG);
++                                } else {
++                                    toast = Toast.makeText(getActivity(), "Got Cert and Key failed", Toast.LENGTH_LONG);
++                                }
++                                toast.setGravity(Gravity.CENTER, 0, 0);
++                                toast.show();
++                            }
++                        });
++                        publishProgress();
++                        return null;
++                    }
++
++                    // This is called from background thread but runs in UI
++                    @Override
++                    protected void onProgressUpdate(Void ...value) {
++                        super.onProgressUpdate();
++                        // Do things like update the progress bar
++                    }
++
++                    // This runs in UI when background thread finishes
++                    @Override
++                    protected void onPostExecute(Void value) {
++                        super.onProgressUpdate();
++                        Log.d(TAG, "onProgressUpdate...");
++                        updateCertKeyView();
++                    }
++
++                }.execute(AppHelper.getIdToken(), editTextUID.getText().toString());
++            }
++        }
++
++    };
++
++    private void updateCertKeyView() {
++        Log.d(TAG, "cert len:" + AppHelper.getCert().length());
++        Log.d(TAG, "private key len" + AppHelper.getPrivateKey().length());
++        if (AppHelper.getCert().length() > creSize)
++            certContent.setText(AppHelper.getCert().substring(0,10) + "...");
++
++        if (AppHelper.getPrivateKey().length() > creSize)
++            keyContent.setText(AppHelper.getPrivateKey().substring(0,10) + "...");
++
++    }
++
++    public void toastMsg(String msg) {
++        Toast toast = (Toast) Toast.makeText( getActivity(), msg, Toast.LENGTH_LONG);
++        toast.show();
++
++    }
++
++    public String formatCredentialText(String credentialText) {
++        // Remove whitespace at end of PEM file (to eliminate differences between input files)
++        credentialText = credentialText.trim();
++
++        // Replace any CR/LF pairs with a newline character.
++        credentialText = credentialText.replace("\r\n/", "\n");
++
++        return credentialText;
++    }
++
++}
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/Step2.java b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/Step2.java
+new file mode 100644
+index 0000000..b2ac4ad
+--- /dev/null
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/Step2.java
+@@ -0,0 +1,80 @@
++package com.amazonaws.youruserpools;
++
++
++import android.os.Bundle;
++import android.support.v4.app.Fragment;
++import android.view.LayoutInflater;
++import android.view.View;
++import android.view.ViewGroup;
++import android.widget.Button;
++import android.widget.EditText;
++import android.widget.Toast;
++
++import com.amazonaws.youruserpools.CognitoYourUserPoolsDemo.R;
++
++/**
++ * This is second tab page named STEP 2, used to
++ * setup WiFi credential for device connecting to
++ * after provisioning user credential.
++ */
++public class Step2 extends Fragment {
++    private EditText editTextSSID;
++    private EditText editTextPwd;
++    private Button btnWriteWifi;
++
++    public Step2() {
++        // Required empty public constructor
++    }
++
++    public void toastMsg(String msg) {
++        Toast toast = (Toast) Toast.makeText( getActivity(), msg, Toast.LENGTH_LONG);
++        toast.show();
++
++    }
++
++    @Override
++    public View onCreateView(LayoutInflater inflater, ViewGroup container,
++                             Bundle savedInstanceState) {
++        View view =  inflater.inflate(R.layout.fragment_step2, container, false);
++        editTextSSID = (EditText) view.findViewById(R.id.ssid_input);
++        editTextPwd = (EditText) view.findViewById(R.id.wifi_pwd_input);
++        btnWriteWifi = (Button) view.findViewById(R.id.btn_write_wifi);
++
++        btnWriteWifi.setOnClickListener(btnWifiWriteOnClick);
++
++        return view;
++    }
++
++    public String formatCredentialText(String credentialText) {
++        // Remove whitespace at end of PEM file (to eliminate differences between input files)
++        credentialText = credentialText.trim();
++
++        // Replace any CR/LF pairs with a newline character.
++        credentialText = credentialText.replace("\r\n/", "\n");
++
++        credentialText = credentialText + "\0";
++
++
++        return credentialText;
++    }
++
++    private Button.OnClickListener btnWifiWriteOnClick = new Button.OnClickListener() {
++        public void onClick(View view) {
++            if (editTextSSID.getText().toString().length() > 0) {
++                AppHelper.setWifiSSID(formatCredentialText(editTextSSID.getText().toString()));
++
++            } else {
++                AppHelper.setWifiSSID("cert not found");
++            }
++
++            if (editTextPwd.getText().toString().length() > 0) {
++                AppHelper.setWifiPassword(formatCredentialText(editTextPwd.getText().toString()));
++            } else {
++                AppHelper.setWifiPassword("password not found");
++            }
++
++            toastMsg("get ssid:" + AppHelper.getWifiSSID()+",len:"+AppHelper.getWifiSSID().length());
++            toastMsg("get wifi:" + AppHelper.getWifiPassword()+",len:"+AppHelper.getWifiPassword().length());
++        }
++    };
++}
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/Step3.java b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/Step3.java
+new file mode 100644
+index 0000000..10c0c06
+--- /dev/null
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/Step3.java
+@@ -0,0 +1,187 @@
++package com.amazonaws.youruserpools;
++
++
++import android.content.Context;
++import android.net.wifi.WifiInfo;
++import android.net.wifi.WifiManager;
++import android.os.AsyncTask;
++import android.os.Bundle;
++import android.os.Handler;
++import android.support.v4.app.Fragment;
++import android.util.Log;
++import android.view.Gravity;
++import android.view.LayoutInflater;
++import android.view.View;
++import android.view.ViewGroup;
++import android.widget.Button;
++import android.widget.Toast;
++
++import com.amazonaws.youruserpools.CognitoYourUserPoolsDemo.R;
++
++import java.io.DataOutputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.security.KeyStore;
++import java.security.SecureRandom;
++
++import javax.net.ssl.KeyManagerFactory;
++import javax.net.ssl.SSLContext;
++import javax.net.ssl.SSLServerSocket;
++import javax.net.ssl.SSLServerSocketFactory;
++import javax.net.ssl.SSLSocket;
++import javax.net.ssl.TrustManagerFactory;
++
++/**
++ * This is third tab page named STEP 3, used to
++ * start TLS connection as a secure server.
++ * After TLS client connecting to it, it will start
++ * provision user credential ann WiFi credential.
++ */
++public class Step3 extends Fragment {
++    private Button btnCon;
++    WifiManager wifiManager;
++    private String TAG = "STEP3";
++    int ssl_result = -1;
++
++    public Step3() {
++        // Required empty public constructor
++    }
++
++    @Override
++    public View onCreateView(LayoutInflater inflater, ViewGroup container,
++                             Bundle savedInstanceState) {
++        // Inflate the layout for this fragment
++        View view =  inflater.inflate(R.layout.fragment_step3, container, false);
++        btnCon = (Button) view.findViewById(R.id.button3);
++        wifiManager = (WifiManager) view.getContext().getSystemService(Context.WIFI_SERVICE);
++
++        btnCon.setOnClickListener(btnConOnClick);
++        return view;
++    }
++    private Button.OnClickListener btnConOnClick = new Button.OnClickListener() {
++        @Override
++        public void onClick(View view) {
++            WifiInfo info = wifiManager.getConnectionInfo();
++            String ssid  = info.getSSID();
++            System.out.println("========================ssid:"+ssid);
++            System.out.println("========================bssid:"+info.getBSSID());
++            if (AppHelper.getWifiSSID().length() == 0 || AppHelper.getWifiPassword().length() == 0) {
++                toastMsg("Please input valid SSID in step 2");
++                return;
++            } else if (AppHelper.getCert().length() < 100 || AppHelper.getPrivateKey().length() < 100) {
++                toastMsg("Please get valid cert/key in step 1");
++                return;
++            }
++
++            new AsyncTask<Void, Void, Void>() {
++                @Override
++                protected Void doInBackground(Void... voids) {
++                SSLServer server = null;
++
++                try {
++                    System.out.println("===================================>read store.bks");
++                    server = new SSLServer(AppHelper.getKeyStream());
++                } catch (Exception e) {
++                    e.printStackTrace();
++                }
++                ssl_result = server.runServer();
++                Handler handler = new Handler(getActivity().getMainLooper());
++                handler.post(new Runnable() {
++                    public void run() {
++                        Toast toast;
++                        if (ssl_result < 0) {
++                            toast = Toast.makeText(getActivity(), "Provision credential failed!", Toast.LENGTH_LONG);
++                        } else {
++                            toast = Toast.makeText(getActivity(), "Provision credential done!", Toast.LENGTH_LONG);
++                        }
++                        toast.setGravity(Gravity.CENTER, 0, 0);
++                        toast.show();
++                    }
++                });
++
++                return null;
++                }
++            }.execute();
++        }
++    };
++
++    public void toastMsg(String msg) {
++
++        Toast toast = (Toast) Toast.makeText( getActivity(), msg, Toast.LENGTH_LONG);
++        toast.show();
++
++    }
++
++    static class SSLServer {
++        private SSLServerSocket serverSocket = null;
++        private String TAG = "SSLServer";
++
++        public SSLServer(InputStream inputStream) throws Exception {
++            final String KEY_STORE_TYPE_BKS = "BKS";
++            final String KEY_PASSWORD = "123456";
++            KeyStore keyStore = KeyStore.getInstance(KEY_STORE_TYPE_BKS);
++
++            keyStore.load(inputStream, KEY_PASSWORD.toCharArray());
++
++            TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
++            trustManagerFactory.init(keyStore);
++
++            KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
++            keyManagerFactory.init(keyStore, KEY_PASSWORD.toCharArray());
++
++            SSLContext sslContext = SSLContext.getInstance("TLS");
++            sslContext.init(keyManagerFactory.getKeyManagers(), trustManagerFactory.getTrustManagers(), new SecureRandom());
++
++            //  get SSLServerSocketFactory
++            SSLServerSocketFactory socketFactory = sslContext.getServerSocketFactory();
++            serverSocket = (SSLServerSocket) socketFactory.createServerSocket(7070);
++        }
++
++        public int runServer() {
++            int ret = -1;
++            try {
++                Log.d(TAG, "===================================>Waiting for connection...");
++                serverSocket.setNeedClientAuth(false);
++                SSLSocket socket = (SSLSocket) serverSocket.accept();
++                Log.d(TAG, "===================================>before send");
++                DataOutputStream output = new DataOutputStream(socket.getOutputStream());
++                // send private key
++                Log.d(TAG, "===================================>AppHelper.PrivateKey:"+AppHelper.getPrivateKey());
++                output.writeUTF(AppHelper.getPrivateKey());
++                timeout(5000);
++
++                //send cert
++                Log.d(TAG, "===================================>AppHelper.cert:"+AppHelper.getCert());
++                output.writeUTF(AppHelper.getCert());
++                timeout(5000);
++
++                //send WiFi SSID
++                Log.d(TAG, "===================================>AppHelper.SSID:"+AppHelper.getWifiSSID());
++                output.writeBytes(AppHelper.getWifiSSID());
++                timeout(5000);
++
++                //send WiFi password
++                Log.d(TAG, "===================================>AppHelper.wifi_password:"+AppHelper.getWifiPassword());
++                output.writeBytes(AppHelper.getWifiPassword());
++                timeout(5000);
++
++                output.close();
++                socket.close();
++                ret = 0;
++
++            } catch (IOException ioException) {
++                Log.d(TAG, ioException.toString());
++            }
++            return ret;
++        }
++
++        private void timeout(int msec)
++        {
++            try {
++                Thread.sleep(msec);
++            } catch (InterruptedException e) {
++                Log.d(TAG, e.toString());
++            }
++        }
++    }
++}
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/UserActivity.java b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/UserActivity.java
+index a0241fd..d06f2a1 100644
+--- a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/UserActivity.java
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/UserActivity.java
+@@ -212,6 +212,11 @@ public class UserActivity extends AppCompatActivity {
+                 Intent aboutAppActivity = new Intent(this, AboutApp.class);
+                 startActivity(aboutAppActivity);
+                 break;
++            case R.id.nav_userend:
++                //cert_provision();
++                Intent CertProvisionActivity = new Intent(this, CertProvisionActivity.class);
++                startActivity(CertProvisionActivity);
++                break;
+         }
+     }
+ 
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/model/Cert.java b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/model/Cert.java
+new file mode 100755
+index 0000000..5d4a4e9
+--- /dev/null
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/model/Cert.java
+@@ -0,0 +1,41 @@
++/*
++ * Copyright 2010-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License").
++ * You may not use this file except in compliance with the License.
++ * A copy of the License is located at
++ *
++ *  http://aws.amazon.com/apache2.0
++ *
++ * or in the "license" file accompanying this file. This file is distributed
++ * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
++ * express or implied. See the License for the specific language governing
++ * permissions and limitations under the License.
++ */
++
++package cert_reply_1.model;
++
++
++public class Cert {
++    @com.google.gson.annotations.SerializedName("sn")
++    private String sn = "123456789";
++
++    /**
++     * Gets SN
++     *
++     * @return SN
++     **/
++    public String getSN() {
++        return sn;
++    }
++
++    /**
++     * Sets the value of SN.
++     *
++     * @param SN the new value
++     */
++    public void setSN(String SN) {
++        this.sn = SN;
++    }
++
++}
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/model/CertReply.java b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/model/CertReply.java
+new file mode 100755
+index 0000000..e49e7dd
+--- /dev/null
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/model/CertReply.java
+@@ -0,0 +1,61 @@
++/*
++ * Copyright 2010-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License").
++ * You may not use this file except in compliance with the License.
++ * A copy of the License is located at
++ *
++ *  http://aws.amazon.com/apache2.0
++ *
++ * or in the "license" file accompanying this file. This file is distributed
++ * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
++ * express or implied. See the License for the specific language governing
++ * permissions and limitations under the License.
++ */
++
++package cert_reply_1.model;
++
++
++public class CertReply {
++    @com.google.gson.annotations.SerializedName("certificatePem")
++    private String certificatePem = null;
++    @com.google.gson.annotations.SerializedName("privateKey")
++    private String privateKey = null;
++
++    /**
++     * Gets certificatePem
++     *
++     * @return certificatePem
++     **/
++    public String getCertificatePem() {
++        return certificatePem;
++    }
++
++    /**
++     * Sets the value of certificatePem.
++     *
++     * @param certificatePem the new value
++     */
++    public void setCertificatePem(String certificatePem) {
++        this.certificatePem = certificatePem;
++    }
++
++    /**
++     * Gets privateKey
++     *
++     * @return privateKey
++     **/
++    public String getPrivateKey() {
++        return privateKey;
++    }
++
++    /**
++     * Sets the value of privateKey.
++     *
++     * @param privateKey the new value
++     */
++    public void setPrivateKey(String privateKey) {
++        this.privateKey = privateKey;
++    }
++
++}
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/model/Empty.java b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/model/Empty.java
+new file mode 100755
+index 0000000..b2aec4a
+--- /dev/null
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/java/com/amazonaws/youruserpools/model/Empty.java
+@@ -0,0 +1,21 @@
++/*
++ * Copyright 2010-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License").
++ * You may not use this file except in compliance with the License.
++ * A copy of the License is located at
++ *
++ *  http://aws.amazon.com/apache2.0
++ *
++ * or in the "license" file accompanying this file. This file is distributed
++ * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
++ * express or implied. See the License for the specific language governing
++ * permissions and limitations under the License.
++ */
++
++package cert_reply_1.model;
++
++
++public class Empty {
++
++}
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/activity_cert_provision.xml b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/activity_cert_provision.xml
+new file mode 100644
+index 0000000..bb3149e
+--- /dev/null
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/activity_cert_provision.xml
+@@ -0,0 +1,48 @@
++<?xml version="1.0" encoding="utf-8"?>
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:app="http://schemas.android.com/apk/res-auto"
++    xmlns:tools="http://schemas.android.com/tools"
++    android:layout_width="match_parent"
++    android:layout_height="match_parent"
++    android:orientation="vertical"
++    tools:context="com.amazonaws.youruserpools.CertProvisionActivity">
++
++
++
++    <android.support.design.widget.AppBarLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:theme="@style/AppTheme.AppBarOverlay">
++
++        <android.support.v7.widget.Toolbar
++            android:id="@+id/toolbar"
++            android:layout_width="match_parent"
++            android:layout_height="?attr/actionBarSize"
++            android:background="?attr/colorPrimary"
++            app:popupTheme="@style/AppTheme.PopupOverlay" />
++
++    </android.support.design.widget.AppBarLayout>
++
++    <android.support.design.widget.TabLayout
++        android:id="@+id/tablayout"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:background="@color/grey_100"
++        app:tabIndicatorColor="@color/button_default" />
++
++    <android.support.v4.view.ViewPager
++        android:id="@+id/viewpager"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content" />
++
++
++
++    <android.support.design.widget.FloatingActionButton
++        android:id="@+id/fab"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:layout_gravity="bottom|end"
++        android:layout_margin="@dimen/fab_margin"
++        app:srcCompat="@android:drawable/btn_default" />
++
++</LinearLayout>
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/fragment_step1.xml b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/fragment_step1.xml
+new file mode 100644
+index 0000000..92fda2c
+--- /dev/null
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/fragment_step1.xml
+@@ -0,0 +1,91 @@
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:app="http://schemas.android.com/apk/res-auto"
++    xmlns:tools="http://schemas.android.com/tools"
++    android:id="@+id/linearLayout"
++    android:layout_width="match_parent"
++    android:layout_height="match_parent"
++    android:orientation="vertical"
++    tools:context="com.amazonaws.youruserpools.step1">
++
++    <LinearLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:orientation="horizontal">
++
++    <TextView
++        android:id="@+id/textView12"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:text="@string/cert_status"
++        android:textSize="30sp"
++        />
++
++    <TextView
++        android:id="@+id/textView15"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:layout_gravity="center"
++        android:text="NONE"
++        android:textSize="30sp" />
++
++    </LinearLayout>
++
++    <LinearLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:orientation="horizontal">
++    <TextView
++        android:id="@+id/textView7"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:text="@string/key_status"
++        android:textSize="30sp"
++        />
++    <TextView
++        android:id="@+id/textView16"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:text="NONE"
++        android:textSize="30sp"
++        />
++    </LinearLayout>
++
++    <TextView
++        android:id="@+id/textView18"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:textSize="30sp"
++        android:text="                           " />
++
++    <TextView
++        android:id="@+id/textView17"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:text="Please input the UID of Device to get cert/key"
++        android:textSize="30sp"/>
++
++    <LinearLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:orientation="horizontal">
++        <TextView
++            android:id="@+id/textView14"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:text="UID:"
++            android:textSize="30sp"
++            />
++        <EditText
++            android:id="@+id/device_uid_input"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:textSize="30sp" />
++    </LinearLayout>
++
++    <Button
++        android:id="@+id/button2"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:text="Re-Genkey" />
++
++</LinearLayout>
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/fragment_step2.xml b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/fragment_step2.xml
+new file mode 100644
+index 0000000..22393e8
+--- /dev/null
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/fragment_step2.xml
+@@ -0,0 +1,65 @@
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:app="http://schemas.android.com/apk/res-auto"
++    xmlns:tools="http://schemas.android.com/tools"
++    android:id="@+id/frameLayout"
++    android:layout_width="match_parent"
++    android:layout_height="match_parent"
++    android:orientation="vertical"
++    tools:context="com.amazonaws.youruserpools.step2">
++
++    <!-- TODO: Update blank fragment layout -->
++
++
++    <TextView
++        android:id="@+id/textView9"
++        android:layout_width="394dp"
++        android:layout_height="48dp"
++        android:text="Please Input Your WiFi Info"
++        android:textSize="30sp" />
++<LinearLayout
++    android:layout_width="match_parent"
++    android:layout_height="wrap_content"
++    android:orientation="horizontal">
++
++    <TextView
++        android:id="@+id/textView10"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:text="SSID:"
++        android:textSize="30sp" />
++
++    <EditText
++        android:id="@+id/ssid_input"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:text="Mobile"
++        android:textSize="30sp" />
++</LinearLayout>
++
++    <LinearLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:orientation="horizontal">
++    <TextView
++        android:id="@+id/textView11"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:text="Password:"
++        android:textSize="30sp" />
++
++        <EditText
++            android:id="@+id/wifi_pwd_input"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:text="Crimping@@2020"
++            android:textSize="30sp" />
++    </LinearLayout>
++
++    <Button
++        android:id="@+id/btn_write_wifi"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:text="Setup WiFi Config" />
++
++
++</LinearLayout>
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/fragment_step3.xml b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/fragment_step3.xml
+new file mode 100644
+index 0000000..8233174
+--- /dev/null
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/layout/fragment_step3.xml
+@@ -0,0 +1,29 @@
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:tools="http://schemas.android.com/tools"
++    android:layout_width="match_parent"
++    android:layout_height="match_parent"
++    android:orientation="vertical"
++    tools:context="com.amazonaws.youruserpools.step3">
++
++
++    <TextView
++        android:id="@+id/textView8"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:text="Please connect to Device AP. the SSID is AWS_IoTLab."
++        android:textSize="30sp" />
++
++    <TextView
++        android:id="@+id/textView19"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:text="               "
++        android:textSize="30sp"/>
++
++    <Button
++        android:id="@+id/button3"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:textSize="30sp"
++        android:text="Connect to Provision" />
++</LinearLayout>
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/res/menu/activity_user_drawer.xml b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/menu/activity_user_drawer.xml
+index a43bcb7..6fe0f31 100644
+--- a/AmazonCognitoYourUserPoolsDemo/app/src/main/res/menu/activity_user_drawer.xml
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/menu/activity_user_drawer.xml
+@@ -62,6 +62,6 @@
+         android:checkableBehavior="single">
+         <item
+             android:id="@+id/nav_userend"
+-            android:title="" />
++            android:title="cert provision" />
+     </group>
+ </menu>
+\ No newline at end of file
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/res/raw/key.bks b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/raw/key.bks
+new file mode 100644
+index 0000000000000000000000000000000000000000..007f1620db5c1c74d21dda673a260cf2b8aab9a8
+GIT binary patch
+literal 1094
+zcmZQzU|?imU=X=-pN;jvy1s)xhcsVjBr1Io-cj_Cfq~tYk%8|~!<>Tr<oM*&qLN1q
+zbAjq}9%?kn0W~o&utw;a8dx$gFuyctVt#7S#B_E6GZP~d6DPxgnD?6=ZaMVRfR~L^
+ztIebBJ1-+6H!FidV}~KP0Vf-CC<~h~Q)n=Z!@<K8?r6wozyp$D=V1-VNlZ>P6fqD2
+z@ws@oBlAm(obz)F67woyTDW<bJVOk{3`9Umn0a{1%ggmDfy#>YlJj#76%FL!7IQL+
+z34vr>a}zUj96&6P5(7DLUPDU*3nL34HZw7g66ZBC05Z*?+`;73CPpRXfMjH4U~XdM
+zXE11D<YH=KWMnw7IFbLVkAmI$I|-BJ+;xvth@ZW6II=*n#$?^MzGbb!8dJV-@wEKD
+zpk|?~s8yiTxl8CIgLg%Sl=RM<`rOW1i|UV`sjrXxQay9=zt(tr?R3uimuv5J<#X=6
+zpzyhCaW9`;3cu^Y_{gfx14*+*9zQE*@wTxrd644iSh3PfN_f%_zEzW>W@hr*e=(SS
+z+S;LB{kY2O(>(3-?9<%mswI7W+uYRB=26)dZs{*mt@P)73FB%nvs<Z~UiP`|+O6HS
+zis#LRt4b~E+A=$j?U#8Ve<Ze8Y{sIeWzLMx_`R2(D}Qsg@_X?7EC1)7ICSt&uer40
+z+nBHB@d4~Rnca)$+cG%&TCg)QGcqtP4lwXDkOig&Sw0pq7Lk&DN&=JPb6jR*Dujp$
+z9SSLkPAmr|3ZS$yi-dt#19k<V1Sl)a!fL?G$oL;Q%z=p)80L%&@|NGDG)l}u>L(Um
+zEst6EcWqDglACD{SJhm6er{IQ)TEuK-L|VOzi?2!Fg|>)Wy`m({WCwGTD5cE6>c3r
+zp9>q^gzF|LEM27k@8wj!-)YzX`M%ShrptDv$ujq`En}+cO^yxbn#UEa|Cfb0^)<5=
+zeg5j$^<TqPZQc%Vg}Mt99@Z~mcqrPkJ?2<b)VmAM3b*a+jt!mu`sAv2TH$q*ZT6i0
+zeC=Y=Vj*c8r(XToRaZ|5v8=oLe#+#}>}7ZMs!mwn{Xy60%B|MTA|V@Gixa2UD0XEt
+zn>qcNda^)!>eerQ>t6+^sinuS_t5V8y2WvgSHQ*B-3KOp7rj%QUEe(Y{`*@myv_$O
+aFm$fJ+$v+Z^v?_b<%=dN{;QDiJO=<Q8IFbk
+
+literal 0
+HcmV?d00001
+
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/res/raw/store.bks b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/raw/store.bks
+new file mode 100644
+index 0000000000000000000000000000000000000000..cf1da5517923a9930479458f132c38445a3f74be
+GIT binary patch
+literal 2353
+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
+N9mfJlH=uIZ{tePn_(uQ$
+
+literal 0
+HcmV?d00001
+
+diff --git a/AmazonCognitoYourUserPoolsDemo/app/src/main/res/values/strings.xml b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/values/strings.xml
+index 823615e..7e8d037 100644
+--- a/AmazonCognitoYourUserPoolsDemo/app/src/main/res/values/strings.xml
++++ b/AmazonCognitoYourUserPoolsDemo/app/src/main/res/values/strings.xml
+@@ -24,4 +24,7 @@
+     <string name="title_activity_add_attribute">AddAttributeActivity</string>
+     <string name="title_activity_device_settings">DeviceSettings</string>
+     <string name="title_activity_new_password">NewPassword</string>
++    <string name="title_activity_cert_provision">CertProvisionActivity</string>
++    <string name="cert_status">Cert:</string>
++    <string name="key_status">Private key:</string>
+ </resources>
+diff --git a/AmazonCognitoYourUserPoolsDemo/build.gradle b/AmazonCognitoYourUserPoolsDemo/build.gradle
+index ac0e385..1f72053 100644
+--- a/AmazonCognitoYourUserPoolsDemo/build.gradle
++++ b/AmazonCognitoYourUserPoolsDemo/build.gradle
+@@ -6,7 +6,7 @@ buildscript {
+         google()
+     }
+     dependencies {
+-        classpath 'com.android.tools.build:gradle:3.2.1'
++        classpath 'com.android.tools.build:gradle:3.4.2'
+ 
+         // NOTE: Do not place your application dependencies here; they belong
+         // in the individual module build.gradle files
+-- 
+2.19.1
+
