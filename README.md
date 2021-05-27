@@ -26,9 +26,9 @@ How to apply the patch:
       cd amazon-freertos/
       git clone https://github.com/ambiot/amazon-freertos.git
       cd amazon-freertos/
-      git apply ../0001-port-user-provision-platform-code.patch
+      git apply ../0001-PATCH-port-user-provision-platform-code.patch
       ```
-
+      2-1. Insert fake (invalid) client private key and certificate in `demos/common/include/aws_clientcredential_keys.h` to pass the TLS validation at the device's first time boot up.
 3. Package lambda used to let AWS API Gateway to access it, it will create thing, policy, and certificate and return the certificate result to caller.
 
 ## License
